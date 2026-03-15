@@ -43,8 +43,8 @@ const settings = definePluginSettings({
     },
     honoredOneAudioUrl: {
         type: OptionType.STRING,
-        description: "Audio for Honored One rank — direct .mp3/.ogg/.wav URL plays natively; YouTube embed URLs use iframe. Swap out the default to change the track.",
-        default: "https://www.youtube.com/embed/7hkI43oPIxk",
+        description: "Audio for Honored One rank — direct .mp3/.ogg/.wav URL plays natively; YouTube embed URLs use iframe. Swap to change the track.",
+        default: "https://www.youtube-nocookie.com/embed/7hkI43oPIxk",
     },
 });
 
@@ -52,16 +52,19 @@ const settings = definePluginSettings({
 
 const RANKS = [
     { id: "d",     min: 0,  label: "D",     color: "#4e5058" },
-    { id: "c",     min: 12, label: "C",     color: "#72767d" },
-    { id: "b",     min: 28, label: "B",     color: "#4d96ff" },
-    { id: "a",     min: 46, label: "A",     color: "#40c057" },
-    { id: "s",     min: 64, label: "S",     color: "#ffd93d" },
-    { id: "wild",  min: 78, label: "WILD",  color: "#ff922b" },
-    { id: "devil", min: 90, label: "DEVIL", color: "#ff6b6b" },
+    { id: "c",     min: 18, label: "C",     color: "#72767d" },
+    { id: "b",     min: 38, label: "B",     color: "#4d96ff" },
+    { id: "a",     min: 58, label: "A",     color: "#40c057" },
+    { id: "s",     min: 78, label: "S",     color: "#ffd93d" },
+    { id: "devil", min: 92, label: "DEVIL", color: "#ff6b6b" },
 ] as const;
 
-const ACTIVE_DRAIN = [0.8, 1.0, 1.5, 2.5, 4.0, 6.5, 10.0] as const;
-const IDLE_DRAIN   = [4.0, 4.0, 5.0, 6.0, 8.0, 12.0, 16.0] as const;
+// DEVIL drain is brutal — you glimpse it, you don't live in it
+const ACTIVE_DRAIN = [0.8, 1.0, 1.5, 2.5, 5.0, 12.0] as const;
+const IDLE_DRAIN   = [4.0, 4.0, 5.0, 6.5, 10.0, 20.0] as const;
+
+// Combo milestones: [threshold, style bonus]
+const COMBO_MILESTONES: [number, number][] = [[10, 6], [25, 10], [50, 15], [100, 22]];
 
 function getRankIndex(score: number): number {
     for (let i = RANKS.length - 1; i >= 0; i--) {
@@ -145,6 +148,8 @@ let wpm = 0;
 let peakRankIdx     = 0;
 let peakWpm         = 0;
 let highCombo       = 0;
+// Rank samples for modal average — tracked in drain loop, used in session summary
+let rankSamples:    number[] = [];
 let summaryTimeout: ReturnType<typeof setTimeout> | null = null;
 let summaryTriggered = false;
 
@@ -234,13 +239,18 @@ function startDrainLoop() {
         const ri   = getRankIndex(styleScore);
         const idle = Date.now() - lastRhythmTime > 2000;
         styleScore = Math.max(0, styleScore - (idle ? IDLE_DRAIN[ri] : ACTIVE_DRAIN[ri]));
+
+        // Track rank distribution for session summary average
+        rankSamples.push(ri);
+        if (rankSamples.length > 600) rankSamples.shift(); // cap at ~60s of history
+
         // Reposition HUD here (drain loop = ~10/s) instead of on every keypress
         positionHud();
         updateHud();
     }, 100);
 }
 
-// ── Popup (Flow State only) ───────────────────────────────────────────────────
+// ── Popup ─────────────────────────────────────────────────────────────────────
 
 function showPopup(text: string, color: string) {
     const bar = getBarEl();
@@ -262,32 +272,42 @@ function updateBarGlow(rankIdx: number) {
     bar.style.transition = "box-shadow 0.5s ease";
     if (honoredOneActive)
         bar.style.boxShadow = "0 0 0 1.5px rgba(199,125,255,0.5),0 0 32px rgba(155,89,182,0.22)";
-    else if (rankIdx === 6)
+    else if (rankIdx === 5) // DEVIL
         bar.style.boxShadow = "0 0 0 1px rgba(255,107,107,0.35),0 0 20px rgba(255,107,107,0.14)";
-    else if (rankIdx === 5)
-        bar.style.boxShadow = "0 0 0 1px rgba(255,146,43,0.25),0 0 14px rgba(255,146,43,0.1)";
+    else if (rankIdx === 4) // S
+        bar.style.boxShadow = "0 0 0 1px rgba(255,217,61,0.2),0 0 12px rgba(255,217,61,0.08)";
     else
         bar.style.boxShadow = "";
 }
 
 // ── Session summary ───────────────────────────────────────────────────────────
 
+function getModalRankIdx(): number {
+    if (rankSamples.length === 0) return peakRankIdx;
+    const counts = new Array(RANKS.length).fill(0) as number[];
+    for (const r of rankSamples) counts[r]++;
+    return counts.reduce((best, c, i) => c > counts[best] ? i : best, 0);
+}
+
 function showSummary() {
     if (summaryTriggered) return;
     summaryTriggered = true;
     const bar = getBarEl();
     if (!bar) return;
-    const rect = bar.getBoundingClientRect();
-    const peak = RANKS[peakRankIdx];
+    const rect   = bar.getBoundingClientRect();
+    const modal  = RANKS[getModalRankIdx()];
+    const peak   = RANKS[peakRankIdx];
+    const showPk = peakRankIdx > getModalRankIdx() && peakRankIdx > 1;
     const el = document.createElement("div");
     el.id = "tp-summary";
     el.style.cssText = `right:${window.innerWidth - rect.right + 8}px;bottom:${window.innerHeight - rect.top + 8}px;`;
     el.innerHTML = `
         <div class="tp-sum-label">session</div>
-        <div class="tp-sum-rank" style="color:${peak.color}">${peak.label}</div>
+        <div class="tp-sum-rank" style="color:${modal.color}">${modal.label}</div>
         <div class="tp-sum-stats">
             <span><b>${highCombo}</b><small>combo</small></span>
             ${peakWpm > 0 ? `<span><b>${peakWpm}</b><small>wpm</small></span>` : ""}
+            ${showPk ? `<span><b style="color:${peak.color}">${peak.label}</b><small>peak</small></span>` : ""}
         </div>
     `;
     document.body.appendChild(el);
@@ -295,10 +315,14 @@ function showSummary() {
         el.style.animation = "tp-fade-out 0.5s ease-out forwards";
         setTimeout(() => {
             el.remove();
-            peakRankIdx = 0; peakWpm = 0; highCombo = 0;
-            summaryTriggered = false; prevRankIdx = 0;
+            resetSessionStats();
         }, 500);
     }, 5000);
+}
+
+function resetSessionStats() {
+    peakRankIdx = 0; peakWpm = 0; highCombo = 0;
+    rankSamples = []; summaryTriggered = false; prevRankIdx = 0;
 }
 
 function dismissSummary() {
@@ -307,8 +331,7 @@ function dismissSummary() {
     if (!el) return;
     el.style.animation = "tp-fade-out 0.3s ease-out forwards";
     setTimeout(() => el.remove(), 300);
-    peakRankIdx = 0; peakWpm = 0; highCombo = 0;
-    summaryTriggered = false; prevRankIdx = 0;
+    resetSessionStats();
 }
 
 // ── HUD ───────────────────────────────────────────────────────────────────────
@@ -439,11 +462,13 @@ function spawnHonoredIframe(url: string) {
     const iframe = document.createElement("iframe");
     iframe.id = "tp-honored-audio";
     iframe.allow = "autoplay; encrypted-media; fullscreen";
-    // Must NOT use display:none — YouTube won't autoplay when hidden that way
-    iframe.style.cssText = "position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;border:none;pointer-events:none;";
-    const videoId = url.split("/").pop()?.split("?")[0] ?? "";
-    const sep = url.includes("?") ? "&" : "?";
-    iframe.src = `${url}${sep}autoplay=1&loop=1&playlist=${videoId}`;
+    // opacity:0 keeps it in the visual viewport — Chromium throttles truly off-screen iframes
+    iframe.style.cssText = "position:fixed;right:0;bottom:0;width:1px;height:1px;border:none;pointer-events:none;opacity:0;";
+    // Prefer youtube-nocookie for better autoplay permission handling
+    const embedUrl = url.replace(/^https?:\/\/(?:www\.)?youtube\.com/, "https://www.youtube-nocookie.com");
+    const videoId = embedUrl.split("/").pop()?.split("?")[0] ?? "";
+    const sep = embedUrl.includes("?") ? "&" : "?";
+    iframe.src = `${embedUrl}${sep}autoplay=1&loop=1&playlist=${videoId}`;
     document.body.appendChild(iframe);
     honoredOneIframe = iframe;
 }
@@ -461,7 +486,7 @@ function activateHonoredOne() {
     const url = settings.store.honoredOneAudioUrl?.trim();
     if (!url) return;
 
-    const isYouTube    = /youtube\.com|youtu\.be/i.test(url);
+    const isYouTube    = /youtube(-nocookie)?\.com|youtu\.be/i.test(url);
     const isDirectFile = /\.(mp3|ogg|wav|flac|aac|m4a|opus)(\?|$)/i.test(url);
 
     if (isDirectFile || !isYouTube) {
@@ -511,7 +536,8 @@ function triggerShake() {
     const chat = getChatEl();
     if (!chat) return;
 
-    const level = Math.min(rankIdx - 2, 2);
+    // Level 0=B, 1=A, 2=S, 3=DEVIL (extra intensity for DEVIL)
+    const level = Math.min(rankIdx - 2, 3);
     const px    = (level + 1) * 3 * (settings.store.shakeIntensity / 4);
     const dur   = 120 + level * 28;
 
@@ -530,7 +556,8 @@ function triggerShake() {
 // ── Combo ─────────────────────────────────────────────────────────────────────
 
 function breakCombo() {
-    if (combo > 0) hurtStyle(25);
+    // Called only on timeout — not on backspace
+    if (combo > 0) hurtStyle(20);
     combo = 0;
     updateHud();
 }
@@ -539,6 +566,25 @@ function incrementCombo() {
     combo++;
     if (comboTimer) clearTimeout(comboTimer);
     comboTimer = setTimeout(breakCombo, settings.store.comboTimeoutMs * 1000);
+
+    // Milestone rewards — style bonus + popup
+    for (const [threshold, bonus] of COMBO_MILESTONES) {
+        if (combo === threshold) {
+            styleScore = Math.min(100, styleScore + bonus);
+            showPopup(`${combo}×`, RANKS[getRankIndex(styleScore)].color);
+            break;
+        }
+    }
+}
+
+// Backspace: soft penalty — nudge combo down, small style hurt, no hard reset
+function softDamage() {
+    usedBackspace = true;
+    hurtStyle(6);
+    if (combo > 0) combo = Math.max(0, combo - 3);
+    if (comboTimer) clearTimeout(comboTimer);
+    if (combo > 0) comboTimer = setTimeout(breakCombo, settings.store.comboTimeoutMs * 1000);
+    updateHud();
 }
 
 function onMessageSent() {
@@ -562,9 +608,7 @@ function onKeyDown(e: KeyboardEvent) {
     dismissSummary();
 
     if (e.key === "Backspace" || e.key === "Delete") {
-        usedBackspace = true;
-        hurtStyle(40);
-        breakCombo();
+        softDamage();
         return;
     }
 
@@ -656,8 +700,9 @@ export default definePlugin({
         keystrokeIntervals = []; wpmTimestamps = []; wpm = 0;
         lastRhythmTime = 0; flowStateCooldown = 0; lastShakeTime = 0;
         messagesSentInWindow = 0; lastMessageTime = 0;
-        prevRankIdx = 0; peakRankIdx = 0; peakWpm = 0; highCombo = 0;
-        summaryTriggered = false; cachedBarEl = null; cachedChatEl = null;
+        prevRankIdx = 0;
+        resetSessionStats();
+        cachedBarEl = null; cachedChatEl = null;
     },
 });
 
@@ -692,14 +737,20 @@ const CSS_TEXT = `
 #tp-hud[data-rank="b"],
 #tp-hud[data-rank="a"] { transform: scale(1.0); }
 
-#tp-hud[data-rank="s"],
-#tp-hud[data-rank="wild"],
+#tp-hud[data-rank="s"] {
+    transform: scale(1.1);
+    background: rgba(0,0,0,0.5);
+    border-color: rgba(255,255,255,0.05);
+    box-shadow: 0 4px 18px rgba(0,0,0,0.45);
+    backdrop-filter: blur(12px);
+}
+
 #tp-hud[data-rank="devil"] {
-    transform: scale(1.15);
-    background: rgba(0,0,0,0.55);
-    border-color: rgba(255,255,255,0.06);
-    box-shadow: 0 4px 20px rgba(0,0,0,0.5);
-    backdrop-filter: blur(14px);
+    transform: scale(1.2);
+    background: rgba(0,0,0,0.62);
+    border-color: rgba(255,107,107,0.12);
+    box-shadow: 0 0 24px rgba(255,107,107,0.18), 0 4px 22px rgba(0,0,0,0.55);
+    backdrop-filter: blur(16px);
 }
 
 #tp-rank-letter {
@@ -714,7 +765,6 @@ const CSS_TEXT = `
     transition: color 0.25s ease, text-shadow 0.3s ease;
 }
 #tp-hud[data-rank="s"]     #tp-rank-letter { text-shadow: 0 0 10px currentColor; }
-#tp-hud[data-rank="wild"]  #tp-rank-letter { text-shadow: 0 0 14px currentColor, 0 0 28px currentColor; }
 #tp-hud[data-rank="devil"] #tp-rank-letter {
     text-shadow: 0 0 14px currentColor, 0 0 30px currentColor;
     animation: tp-devil-pulse 0.8s ease-in-out infinite alternate;
