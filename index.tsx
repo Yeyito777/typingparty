@@ -44,7 +44,7 @@ const settings = definePluginSettings({
     honoredOneAudioUrl: {
         type: OptionType.STRING,
         description: "Audio for Honored One rank — SoundCloud/YouTube track URL or direct .mp3/.ogg/.wav link.",
-        default: "https://soundcloud.com/nikita-fomin-609801819/if-i-am-with-you-yoshimasa-terui",
+        default: "https://soundcloud.com/dimitar-tasev-789043651/the-honored-one-japanese-ver-satoru-gojo",
     },
 });
 
@@ -155,8 +155,10 @@ let summaryTriggered = false;
 
 let lastShakeTime = 0;
 
-let honoredOneActive      = false;
-let honoredOneAudioTimer: ReturnType<typeof setTimeout> | null = null; // 5s delay before audio starts
+let honoredOneActive       = false;
+let honoredOneAudioTimer:  ReturnType<typeof setTimeout> | null = null; // 5s delay before audio starts
+let honoredOnePurpleTimer: ReturnType<typeof setTimeout> | null = null; // Murasaki flash at 1:16
+let honoredOneCrashTimer:  ReturnType<typeof setTimeout> | null = null; // crash screen at 1:50
 let honoredOneIframe: HTMLIFrameElement | null = null;
 let honoredOneAudio:  HTMLAudioElement  | null = null;
 
@@ -503,6 +505,55 @@ function showSendEffect(sendCombo: number, rankIdx: number) {
 
 // ── Honored One ───────────────────────────────────────────────────────────────
 
+// ── Honored One moments ───────────────────────────────────────────────────────
+
+// 1:16 — Gojo says "Murasaki" (紫, purple void). Full-screen purple wipe.
+function triggerMurasakiFlash() {
+    const el = document.createElement("div");
+    el.id = "tp-murasaki";
+    document.body.appendChild(el);
+
+    el.animate(
+        [
+            { opacity: 0 },
+            { opacity: 1, offset: 0.04 },
+            { opacity: 0.85, offset: 0.15 },
+            { opacity: 1, offset: 0.3 },
+            { opacity: 0.6, offset: 0.55 },
+            { opacity: 0 },
+        ],
+        { duration: 3200, easing: "ease-in-out", fill: "forwards" }
+    ).onfinish = () => el.remove();
+}
+
+// 1:50 — Climax. Discord "crashes". Stays for 6 seconds then fades.
+// (Fake — pointer-events:none so you can still type through it.)
+function triggerFakeCrash() {
+    const el = document.createElement("div");
+    el.id = "tp-crash";
+    document.body.appendChild(el);
+
+    // Screen flash on entry
+    el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 80, fill: "forwards" });
+
+    // Shake the whole thing briefly
+    el.animate(
+        [
+            { transform: "translate(0,0)" },
+            { transform: "translate(-6px,4px)" },
+            { transform: "translate(6px,-4px)" },
+            { transform: "translate(-4px,2px)" },
+            { transform: "translate(0,0)" },
+        ],
+        { duration: 250, delay: 80, easing: "ease-out" }
+    );
+
+    setTimeout(() => {
+        el.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 600, fill: "forwards" })
+            .onfinish = () => el.remove();
+    }, 6000);
+}
+
 // Spawns an iframe for the given final embed URL, tagging it with typingparty=1
 // so the native.ts main-process hook can identify and force-play it.
 function spawnHonoredIframe(embedUrl: string) {
@@ -549,6 +600,13 @@ function activateHonoredOne() {
     const isDirectFile = /\.(mp3|ogg|wav|flac|aac|m4a|opus)(\?|$)/i.test(url);
     const embedUrl     = isDirectFile ? null : buildEmbedUrl(url);
 
+    // Dramatic moments keyed to the track (offsets relative to activation):
+    //   +5s  = audio starts (see honoredOneAudioTimer delay below)
+    //   +81s = 1:16 Murasaki flash (5s delay + 76s into track)
+    //   +115s= 1:50 crash sequence (5s delay + 110s into track)
+    honoredOnePurpleTimer = setTimeout(triggerMurasakiFlash, 81_000);
+    honoredOneCrashTimer  = setTimeout(triggerFakeCrash,    115_000);
+
     // 5-second delay so the banner has time to breathe before the music drops
     honoredOneAudioTimer = setTimeout(() => {
         honoredOneAudioTimer = null;
@@ -573,7 +631,11 @@ function activateHonoredOne() {
 function deactivateHonoredOne() {
     if (!honoredOneActive) return;
     honoredOneActive = false;
-    if (honoredOneAudioTimer) { clearTimeout(honoredOneAudioTimer); honoredOneAudioTimer = null; }
+    if (honoredOneAudioTimer)  { clearTimeout(honoredOneAudioTimer);  honoredOneAudioTimer  = null; }
+    if (honoredOnePurpleTimer) { clearTimeout(honoredOnePurpleTimer); honoredOnePurpleTimer = null; }
+    if (honoredOneCrashTimer)  { clearTimeout(honoredOneCrashTimer);  honoredOneCrashTimer  = null; }
+    document.getElementById("tp-murasaki")?.remove();
+    document.getElementById("tp-crash")?.remove();
     if (honoredOneAudio) {
         honoredOneAudio.pause();
         honoredOneAudio.src = "";
@@ -754,7 +816,7 @@ export default definePlugin({
         particles.length = 0;
 
         deactivateHonoredOne();
-        honoredOneActive = false; honoredOneAudioTimer = null; honoredOneAudio = null; honoredOneIframe = null;
+        honoredOneActive = false; honoredOneAudioTimer = null; honoredOnePurpleTimer = null; honoredOneCrashTimer = null; honoredOneAudio = null; honoredOneIframe = null;
 
         const chat = getChatEl();
         if (chat) { chat.getAnimations().forEach(a => a.cancel()); chat.style.transform = ""; }
@@ -940,6 +1002,31 @@ const CSS_TEXT = `
 @keyframes tp-honored-pulse {
     from { filter: brightness(1.0); text-shadow: 0 0 16px #e8d5ff, 0 0 32px #9b59b6; }
     to   { filter: brightness(1.9); text-shadow: 0 0 28px #fff,    0 0 56px #c77dff; }
+}
+
+/* ── Murasaki (1:16) ─────────────────────────────────────────────────────────── */
+#tp-murasaki {
+    position: fixed; inset: 0; z-index: 999998; pointer-events: none;
+    background: radial-gradient(ellipse at center, #9b30ff 0%, #4a007a 50%, #1a0033 100%);
+    opacity: 0;
+}
+
+/* ── Crash screen (1:50) ─────────────────────────────────────────────────────── */
+#tp-crash {
+    position: fixed; inset: 0; z-index: 999999; pointer-events: none;
+    background: #0d0d0d;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px;
+    font-family: 'Space Grotesk', monospace; opacity: 0;
+}
+#tp-crash::before {
+    content: ":(";
+    font-size: 120px; font-weight: 700; color: #fff; line-height: 1;
+}
+#tp-crash::after {
+    content: "Your Discord ran into a problem.\Astop code:  HONORED_ONE_ACHIEVED";
+    white-space: pre;
+    font-size: 15px; font-weight: 400; color: rgba(255,255,255,0.7);
+    text-align: center; line-height: 2; letter-spacing: 1px;
 }
 
 #tp-particles {
