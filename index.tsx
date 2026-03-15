@@ -80,6 +80,13 @@ const CONFETTI_COLORS = [
     "#ff6fff", "#845ef7", "#ff922b", "#20c997",
 ];
 
+// Pick a confetti color weighted toward the current rank color
+function pickConfettiColor(rankIdx: number): string {
+    // 40% chance to use rank color, 60% random
+    if (rankIdx >= 1 && Math.random() < 0.4) return RANKS[rankIdx].color;
+    return CONFETTI_COLORS[Math.floor(Math.random() * CONFETTI_COLORS.length)];
+}
+
 // Single shared animation loop — one rAF for all particles instead of one per particle.
 // Particles use transform:translate() which is GPU-composited (no layout reflow per frame).
 interface Particle { el: HTMLDivElement; dx: number; dy: number; rot: number; t0: number; dur: number; }
@@ -133,10 +140,12 @@ let comboTimer: ReturnType<typeof setTimeout> | null = null;
 let messagesSentInWindow = 0;
 let lastMessageTime    = 0;
 let usedBackspace      = false;
+let cleanSendStreak    = 0; // consecutive clean sends
 
 let styleScore  = 0;
 let prevRankIdx = 0;
 let drainInterval: ReturnType<typeof setInterval> | null = null;
+let hudShown    = false; // tracks if HUD has been shown this session (for entrance anim)
 
 let keystrokeIntervals: number[] = [];
 let lastRhythmTime    = 0;
@@ -279,10 +288,12 @@ function updateBarGlow(rankIdx: number) {
         bar.style.boxShadow = "0 0 0 1.5px rgba(199,125,255,0.5),0 0 32px rgba(155,89,182,0.22)";
     else if (rankIdx === 5) // DEVIL
         bar.style.boxShadow = "0 0 0 1px rgba(255,107,107,0.35),0 0 20px rgba(255,107,107,0.14)";
-    else if (rankIdx === 4) // S
-        bar.style.boxShadow = "0 0 0 1px rgba(255,217,61,0.2),0 0 12px rgba(255,217,61,0.08)";
+    else if (rankIdx >= 3) // A and S — breathing pulse via CSS animation class
+        bar.style.boxShadow = `0 0 0 1px ${RANKS[rankIdx].color}33,0 0 12px ${RANKS[rankIdx].color}14`;
     else
         bar.style.boxShadow = "";
+    // Breathing class for S+ ranks
+    bar.classList.toggle("tp-bar-breathing", rankIdx >= 4 && !honoredOneActive);
 }
 
 // ── Session summary ───────────────────────────────────────────────────────────
@@ -329,6 +340,7 @@ function showSummary() {
 function resetSessionStats() {
     peakRankIdx = 0; peakWpm = 0; highCombo = 0;
     rankSamples = []; summaryTriggered = false; prevRankIdx = 0;
+    cleanSendStreak = 0; hudShown = false;
 }
 
 function dismissSummary() {
@@ -395,7 +407,23 @@ function updateHud() {
     if (combo > highCombo) highCombo = combo;
 
     if (rankIdx !== prevRankIdx) {
-        if (rankIdx > prevRankIdx && rankIdx >= 2) showPopup(RANKS[rankIdx].label, RANKS[rankIdx].color);
+        if (rankIdx > prevRankIdx && rankIdx >= 2) {
+            showPopup(RANKS[rankIdx].label, RANKS[rankIdx].color);
+            // DEVIL entry — red vignette flash
+            if (rankIdx === 5) {
+                const vig = document.createElement("div");
+                vig.className = "tp-devil-vignette";
+                document.body.appendChild(vig);
+                setTimeout(() => vig.remove(), 800);
+            }
+        }
+        // Rank-down desaturation flash on HUD
+        if (rankIdx < prevRankIdx && prevRankIdx >= 2 && hud) {
+            hud.animate(
+                [{ filter: "saturate(0.2) brightness(0.6)" }, { filter: "saturate(1) brightness(1)" }],
+                { duration: 400, easing: "ease-out" }
+            );
+        }
         prevRankIdx = rankIdx;
     }
     updateBarGlow(rankIdx);
@@ -405,7 +433,16 @@ function updateHud() {
     else if (honoredOneActive && wpm < 200) deactivateHonoredOne();
 
     hud.dataset.rank = honoredOneActive ? "honored" : rank.id;
-    hud.classList.toggle("tp-visible", styleScore > 0 || honoredOneActive);
+
+    // HUD entrance animation on first show of session
+    const shouldShow = styleScore > 0 || honoredOneActive;
+    if (shouldShow && !hudShown) {
+        hudShown = true;
+        hud.classList.add("tp-visible", "tp-hud-enter");
+        setTimeout(() => hud?.classList.remove("tp-hud-enter"), 500);
+    } else {
+        hud.classList.toggle("tp-visible", shouldShow);
+    }
 
     if (hudRankEl) {
         hudRankEl.textContent = honoredOneActive ? "✦" : rank.label;
@@ -419,6 +456,10 @@ function updateHud() {
         hudFillEl.style.width      = `${pct}%`;
         hudFillEl.style.background = honoredOneActive ? "#c77dff" : rank.color;
         hudFillEl.style.boxShadow  = rankIdx >= 4 ? `0 0 6px ${rank.color}` : "none";
+
+        // Idle decay flicker — meter pulses when draining from inactivity
+        const idle = Date.now() - lastRhythmTime > 2000;
+        hudFillEl.classList.toggle("tp-fill-draining", idle && styleScore > 0);
     }
 
     if (hudComboEl) { hudComboEl.textContent = String(combo); hudComboEl.style.color = rank.color; }
@@ -453,7 +494,7 @@ function spawnConfetti(x: number, y: number) {
     const now = performance.now();
     for (let i = 0; i < count; i++) {
         const el    = document.createElement("div");
-        const color = CONFETTI_COLORS[Math.floor(Math.random() * CONFETTI_COLORS.length)];
+        const color = pickConfettiColor(tier);
         const size  = 3 + Math.random() * 5;
         const ang   = Math.random() * Math.PI * 2;
         const vel   = 30 + Math.random() * 60;
@@ -469,12 +510,12 @@ function spawnConfetti(x: number, y: number) {
 // ── Send burst ────────────────────────────────────────────────────────────────
 
 // Raw particle spawner — no tier/rank guard, used for the send celebration.
-function spawnBurst(x: number, y: number, count: number) {
+function spawnBurst(x: number, y: number, count: number, rankIdx: number) {
     if (!particleContainer) return;
     const now = performance.now();
     for (let i = 0; i < count; i++) {
         const el    = document.createElement("div");
-        const color = CONFETTI_COLORS[Math.floor(Math.random() * CONFETTI_COLORS.length)];
+        const color = pickConfettiColor(rankIdx);
         const size  = 4 + Math.random() * 6;
         // Fan upward: angle biased toward the top half of the circle
         const ang   = -Math.PI + Math.random() * Math.PI; // -180° to 0° (upward arc)
@@ -507,7 +548,7 @@ function showSendEffect(sendCombo: number, rankIdx: number) {
         const count = 4 + rankIdx * 2 + (sendCombo >= 20 ? 6 : 0);
         const x = rect.left + rect.width * 0.5 + (Math.random() - 0.5) * rect.width * 0.4;
         const y = rect.top + rect.height * 0.3;
-        spawnBurst(x, y, Math.min(count, 20));
+        spawnBurst(x, y, Math.min(count, 20), rankIdx);
     }
 
     // Popup — lower thresholds so you actually see them
@@ -516,6 +557,12 @@ function showSendEffect(sendCombo: number, rankIdx: number) {
                   sendCombo >= 20 ? "perfect" :
                   sendCombo >= 8  ? "clean" : "";
     if (label) showPopup(label, rank.color);
+
+    // Perfect message streak
+    cleanSendStreak++;
+    if (cleanSendStreak === 3) showPopup("streak", "#40c057");
+    else if (cleanSendStreak === 5) showPopup("unstoppable", "#ffd93d");
+    else if (cleanSendStreak === 10) showPopup("legendary", "#ff6b6b");
 }
 
 // ── Honored One ───────────────────────────────────────────────────────────────
@@ -563,7 +610,7 @@ function triggerMurasakiFlash() {
     // Purple persists — removed only on deactivate or crash
 }
 
-// 1:50 — Climax. Discord "crashes". Stays for 6 seconds then fades.
+// 1:43 — Climax. Discord "crashes". Stays for 6 seconds then fades.
 // (Fake — pointer-events:none so you can still type through it.)
 function triggerFakeCrash() {
     const el = document.createElement("div");
@@ -639,10 +686,10 @@ function activateHonoredOne() {
 
     // Dramatic moments keyed to the track (offsets from activation, +1s audio delay):
     //   +67s  = 1:06 Red & Blue orbs appear and converge
-    //   +77s  = 1:15.9 MURASAKI — flash + persistent purple
-    //   +104s = 1:43 crash (energy dies here, not 1:50)
+    //   +80s  = 1:19 MURASAKI — flash + persistent purple (after blast sfx)
+    //   +104s = 1:43 crash (energy dies here)
     honoredOneRedBlueTimer = setTimeout(triggerRedBlue,      67_000);
-    honoredOnePurpleTimer  = setTimeout(triggerMurasakiFlash, 77_000);
+    honoredOnePurpleTimer  = setTimeout(triggerMurasakiFlash, 80_000);
     honoredOneCrashTimer   = setTimeout(triggerFakeCrash,    104_000);
 
     // Stagelight — fades in after banner disappears (3s), shines down on the typing area
@@ -701,7 +748,7 @@ function deactivateHonoredOne() {
     honoredOneIframe?.remove(); honoredOneIframe = null;
     document.getElementById("tp-honored-banner")?.remove();
     const bar = getBarEl();
-    if (bar) bar.style.boxShadow = "";
+    if (bar) { bar.style.boxShadow = ""; bar.classList.remove("tp-bar-breathing"); }
 }
 
 // ── Screen shake ──────────────────────────────────────────────────────────────
@@ -734,6 +781,19 @@ function triggerShake() {
         ],
         { duration: dur, easing: "ease-out", composite: "replace" }
     );
+}
+
+// ── Caret trail ───────────────────────────────────────────────────────────────
+
+function updateCaretGlow(target: HTMLElement) {
+    const rankIdx = getRankIndex(styleScore);
+    if (rankIdx < 1) {
+        target.style.setProperty("--tp-caret-glow", "none");
+        return;
+    }
+    const color = RANKS[rankIdx].color;
+    const intensity = rankIdx >= 5 ? "0 0 8px" : rankIdx >= 4 ? "0 0 6px" : "0 0 4px";
+    target.style.setProperty("--tp-caret-glow", `${intensity} ${color}`);
 }
 
 // ── Combo ─────────────────────────────────────────────────────────────────────
@@ -784,6 +844,7 @@ function onMessageSent() {
 
     // Show send celebration BEFORE resetting state so we can read rank/combo
     if (wasClean) showSendEffect(sendCombo, rankIdx);
+    else cleanSendStreak = 0; // backspace breaks the streak
 
     usedBackspace = false;
     wpmTimestamps = []; wpm = 0; combo = 0;
@@ -808,6 +869,7 @@ function onKeyDown(e: KeyboardEvent) {
     recordKeystrokeForWpm();
     incrementCombo();
     gainStyle();
+    updateCaretGlow(target);
 
     // Confetti at caret; collapsed-range rects can be all-zero in some Discord builds
     const sel = window.getSelection();
@@ -879,21 +941,22 @@ export default definePlugin({
         const chat = getChatEl();
         if (chat) { chat.getAnimations().forEach(a => a.cancel()); chat.style.transform = ""; }
         const bar = getBarEl();
-        if (bar) bar.style.boxShadow = "";
+        if (bar) { bar.style.boxShadow = ""; bar.classList.remove("tp-bar-breathing"); }
 
         document.getElementById("tp-summary")?.remove();
         document.getElementById("tp-honored-banner")?.remove();
         document.getElementById("tp-stagelight")?.remove();
         document.querySelectorAll(".tp-popup").forEach(el => el.remove());
+        document.querySelectorAll(".tp-devil-vignette").forEach(el => el.remove());
         destroyHud();
         document.getElementById("tp-styles")?.remove();
         document.getElementById("tp-font")?.remove();
 
-        combo = 0; styleScore = 0; usedBackspace = false;
+        combo = 0; styleScore = 0; usedBackspace = false; cleanSendStreak = 0;
         keystrokeIntervals = []; wpmTimestamps = []; wpm = 0;
         lastRhythmTime = 0; flowStateCooldown = 0; lastShakeTime = 0;
         messagesSentInWindow = 0; lastMessageTime = 0;
-        prevRankIdx = 0;
+        prevRankIdx = 0; hudShown = false;
         resetSessionStats();
         cachedBarEl = null; cachedChatEl = null;
     },
@@ -923,6 +986,14 @@ const CSS_TEXT = `
         box-shadow 0.4s ease;
 }
 #tp-hud.tp-visible { opacity: 1; }
+/* Entrance animation — slide up from bottom-right */
+#tp-hud.tp-hud-enter {
+    animation: tp-hud-slide-in 0.5s cubic-bezier(0.34, 1.3, 0.64, 1) forwards;
+}
+@keyframes tp-hud-slide-in {
+    0%   { opacity: 0; transform: translateY(16px) scale(0.8); }
+    100% { opacity: 1; transform: translateY(0) scale(1); }
+}
 
 #tp-hud[data-rank="d"],
 #tp-hud[data-rank="c"] { transform: scale(0.82); }
@@ -977,6 +1048,14 @@ const CSS_TEXT = `
     height: 100%; border-radius: 2px;
     transition: width 0.12s ease-out, background 0.25s ease, box-shadow 0.25s ease;
 }
+/* Idle drain flicker — meter pulses when style is draining from inactivity */
+#tp-meter-fill.tp-fill-draining {
+    animation: tp-drain-flicker 0.4s ease-in-out infinite alternate;
+}
+@keyframes tp-drain-flicker {
+    0%   { opacity: 1; }
+    100% { opacity: 0.4; }
+}
 
 #tp-hud-stats {
     font-family: 'Space Grotesk', sans-serif;
@@ -1002,6 +1081,30 @@ const CSS_TEXT = `
     18%  { opacity: 1; transform: translateY(-8px); }
     100% { opacity: 0; transform: translateY(-52px); }
 }
+
+/* ── Bar breathing pulse (S+ ranks) ──────────────────────────────────────── */
+.tp-bar-breathing {
+    animation: tp-bar-breathe 2s ease-in-out infinite !important;
+}
+@keyframes tp-bar-breathe {
+    0%, 100% { box-shadow: 0 0 0 1px rgba(255,217,61,0.15), 0 0 8px rgba(255,217,61,0.06); }
+    50%      { box-shadow: 0 0 0 1px rgba(255,217,61,0.3), 0 0 16px rgba(255,217,61,0.12); }
+}
+
+/* ── DEVIL entry vignette ──────────────────────────────────────────────── */
+.tp-devil-vignette {
+    position: fixed; inset: 0; z-index: 99997; pointer-events: none;
+    background: radial-gradient(ellipse at center, transparent 50%, rgba(255,60,60,0.2) 100%);
+    animation: tp-devil-vig-anim 0.8s ease-out forwards;
+}
+@keyframes tp-devil-vig-anim {
+    0%   { opacity: 0; }
+    30%  { opacity: 1; }
+    100% { opacity: 0; }
+}
+
+/* ── Caret glow ────────────────────────────────────────────────────────── */
+[role="textbox"] [data-slate-leaf] { text-shadow: var(--tp-caret-glow, none); }
 
 #tp-summary {
     position: fixed; font-family: 'Space Grotesk', sans-serif;
@@ -1108,7 +1211,7 @@ const CSS_TEXT = `
     font-size: 120px; font-weight: 700; color: #fff; line-height: 1;
 }
 #tp-crash::after {
-    content: "Your Discord ran into a problem.\Astop code:  HONORED_ONE_ACHIEVED";
+    content: "Your Discord ran into a problem.\\Astop code:  HONORED_ONE_ACHIEVED";
     white-space: pre;
     font-size: 15px; font-weight: 400; color: rgba(255,255,255,0.7);
     text-align: center; line-height: 2; letter-spacing: 1px;
