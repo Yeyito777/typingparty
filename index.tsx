@@ -80,10 +80,7 @@ const CONFETTI_COLORS = [
     "#ff6fff", "#845ef7", "#ff922b", "#20c997",
 ];
 
-// Pick a confetti color weighted toward the current rank color
-function pickConfettiColor(rankIdx: number): string {
-    // 40% chance to use rank color, 60% random
-    if (rankIdx >= 1 && Math.random() < 0.4) return RANKS[rankIdx].color;
+function pickConfettiColor(): string {
     return CONFETTI_COLORS[Math.floor(Math.random() * CONFETTI_COLORS.length)];
 }
 
@@ -288,12 +285,10 @@ function updateBarGlow(rankIdx: number) {
         bar.style.boxShadow = "0 0 0 1.5px rgba(199,125,255,0.5),0 0 32px rgba(155,89,182,0.22)";
     else if (rankIdx === 5) // DEVIL
         bar.style.boxShadow = "0 0 0 1px rgba(255,107,107,0.35),0 0 20px rgba(255,107,107,0.14)";
-    else if (rankIdx >= 3) // A and S — breathing pulse via CSS animation class
-        bar.style.boxShadow = `0 0 0 1px ${RANKS[rankIdx].color}33,0 0 12px ${RANKS[rankIdx].color}14`;
+    else if (rankIdx === 4) // S
+        bar.style.boxShadow = "0 0 0 1px rgba(255,217,61,0.2),0 0 12px rgba(255,217,61,0.08)";
     else
         bar.style.boxShadow = "";
-    // Breathing class for S+ ranks
-    bar.classList.toggle("tp-bar-breathing", rankIdx >= 4 && !honoredOneActive);
 }
 
 // ── Session summary ───────────────────────────────────────────────────────────
@@ -409,20 +404,6 @@ function updateHud() {
     if (rankIdx !== prevRankIdx) {
         if (rankIdx > prevRankIdx && rankIdx >= 2) {
             showPopup(RANKS[rankIdx].label, RANKS[rankIdx].color);
-            // DEVIL entry — red vignette flash
-            if (rankIdx === 5) {
-                const vig = document.createElement("div");
-                vig.className = "tp-devil-vignette";
-                document.body.appendChild(vig);
-                setTimeout(() => vig.remove(), 800);
-            }
-        }
-        // Rank-down desaturation flash on HUD
-        if (rankIdx < prevRankIdx && prevRankIdx >= 2 && hud) {
-            hud.animate(
-                [{ filter: "saturate(0.2) brightness(0.6)" }, { filter: "saturate(1) brightness(1)" }],
-                { duration: 400, easing: "ease-out" }
-            );
         }
         prevRankIdx = rankIdx;
     }
@@ -457,9 +438,6 @@ function updateHud() {
         hudFillEl.style.background = honoredOneActive ? "#c77dff" : rank.color;
         hudFillEl.style.boxShadow  = rankIdx >= 4 ? `0 0 6px ${rank.color}` : "none";
 
-        // Idle decay flicker — meter pulses when draining from inactivity
-        const idle = Date.now() - lastRhythmTime > 2000;
-        hudFillEl.classList.toggle("tp-fill-draining", idle && styleScore > 0);
     }
 
     if (hudComboEl) { hudComboEl.textContent = String(combo); hudComboEl.style.color = rank.color; }
@@ -494,7 +472,7 @@ function spawnConfetti(x: number, y: number) {
     const now = performance.now();
     for (let i = 0; i < count; i++) {
         const el    = document.createElement("div");
-        const color = pickConfettiColor(tier);
+        const color = pickConfettiColor();
         const size  = 3 + Math.random() * 5;
         const ang   = Math.random() * Math.PI * 2;
         const vel   = 30 + Math.random() * 60;
@@ -510,12 +488,12 @@ function spawnConfetti(x: number, y: number) {
 // ── Send burst ────────────────────────────────────────────────────────────────
 
 // Raw particle spawner — no tier/rank guard, used for the send celebration.
-function spawnBurst(x: number, y: number, count: number, rankIdx: number) {
+function spawnBurst(x: number, y: number, count: number) {
     if (!particleContainer) return;
     const now = performance.now();
     for (let i = 0; i < count; i++) {
         const el    = document.createElement("div");
-        const color = pickConfettiColor(rankIdx);
+        const color = pickConfettiColor();
         const size  = 4 + Math.random() * 6;
         // Fan upward: angle biased toward the top half of the circle
         const ang   = -Math.PI + Math.random() * Math.PI; // -180° to 0° (upward arc)
@@ -548,7 +526,7 @@ function showSendEffect(sendCombo: number, rankIdx: number) {
         const count = 4 + rankIdx * 2 + (sendCombo >= 20 ? 6 : 0);
         const x = rect.left + rect.width * 0.5 + (Math.random() - 0.5) * rect.width * 0.4;
         const y = rect.top + rect.height * 0.3;
-        spawnBurst(x, y, Math.min(count, 20), rankIdx);
+        spawnBurst(x, y, Math.min(count, 20));
     }
 
     // Popup — lower thresholds so you actually see them
@@ -748,7 +726,7 @@ function deactivateHonoredOne() {
     honoredOneIframe?.remove(); honoredOneIframe = null;
     document.getElementById("tp-honored-banner")?.remove();
     const bar = getBarEl();
-    if (bar) { bar.style.boxShadow = ""; bar.classList.remove("tp-bar-breathing"); }
+    if (bar) bar.style.boxShadow = "";
 }
 
 // ── Screen shake ──────────────────────────────────────────────────────────────
@@ -781,19 +759,6 @@ function triggerShake() {
         ],
         { duration: dur, easing: "ease-out", composite: "replace" }
     );
-}
-
-// ── Caret trail ───────────────────────────────────────────────────────────────
-
-function updateCaretGlow(target: HTMLElement) {
-    const rankIdx = getRankIndex(styleScore);
-    if (rankIdx < 1) {
-        target.style.setProperty("--tp-caret-glow", "none");
-        return;
-    }
-    const color = RANKS[rankIdx].color;
-    const intensity = rankIdx >= 5 ? "0 0 8px" : rankIdx >= 4 ? "0 0 6px" : "0 0 4px";
-    target.style.setProperty("--tp-caret-glow", `${intensity} ${color}`);
 }
 
 // ── Combo ─────────────────────────────────────────────────────────────────────
@@ -869,8 +834,6 @@ function onKeyDown(e: KeyboardEvent) {
     recordKeystrokeForWpm();
     incrementCombo();
     gainStyle();
-    updateCaretGlow(target);
-
     // Confetti at caret; collapsed-range rects can be all-zero in some Discord builds
     const sel = window.getSelection();
     let cx: number, cy: number;
@@ -941,13 +904,12 @@ export default definePlugin({
         const chat = getChatEl();
         if (chat) { chat.getAnimations().forEach(a => a.cancel()); chat.style.transform = ""; }
         const bar = getBarEl();
-        if (bar) { bar.style.boxShadow = ""; bar.classList.remove("tp-bar-breathing"); }
+        if (bar) bar.style.boxShadow = "";
 
         document.getElementById("tp-summary")?.remove();
         document.getElementById("tp-honored-banner")?.remove();
         document.getElementById("tp-stagelight")?.remove();
         document.querySelectorAll(".tp-popup").forEach(el => el.remove());
-        document.querySelectorAll(".tp-devil-vignette").forEach(el => el.remove());
         destroyHud();
         document.getElementById("tp-styles")?.remove();
         document.getElementById("tp-font")?.remove();
@@ -1048,15 +1010,6 @@ const CSS_TEXT = `
     height: 100%; border-radius: 2px;
     transition: width 0.12s ease-out, background 0.25s ease, box-shadow 0.25s ease;
 }
-/* Idle drain flicker — meter pulses when style is draining from inactivity */
-#tp-meter-fill.tp-fill-draining {
-    animation: tp-drain-flicker 0.4s ease-in-out infinite alternate;
-}
-@keyframes tp-drain-flicker {
-    0%   { opacity: 1; }
-    100% { opacity: 0.4; }
-}
-
 #tp-hud-stats {
     font-family: 'Space Grotesk', sans-serif;
     font-size: 10px; font-weight: 400; letter-spacing: 0.5px;
@@ -1081,30 +1034,6 @@ const CSS_TEXT = `
     18%  { opacity: 1; transform: translateY(-8px); }
     100% { opacity: 0; transform: translateY(-52px); }
 }
-
-/* ── Bar breathing pulse (S+ ranks) ──────────────────────────────────────── */
-.tp-bar-breathing {
-    animation: tp-bar-breathe 2s ease-in-out infinite !important;
-}
-@keyframes tp-bar-breathe {
-    0%, 100% { box-shadow: 0 0 0 1px rgba(255,217,61,0.15), 0 0 8px rgba(255,217,61,0.06); }
-    50%      { box-shadow: 0 0 0 1px rgba(255,217,61,0.3), 0 0 16px rgba(255,217,61,0.12); }
-}
-
-/* ── DEVIL entry vignette ──────────────────────────────────────────────── */
-.tp-devil-vignette {
-    position: fixed; inset: 0; z-index: 99997; pointer-events: none;
-    background: radial-gradient(ellipse at center, transparent 50%, rgba(255,60,60,0.2) 100%);
-    animation: tp-devil-vig-anim 0.8s ease-out forwards;
-}
-@keyframes tp-devil-vig-anim {
-    0%   { opacity: 0; }
-    30%  { opacity: 1; }
-    100% { opacity: 0; }
-}
-
-/* ── Caret glow ────────────────────────────────────────────────────────── */
-[role="textbox"] [data-slate-leaf] { text-shadow: var(--tp-caret-glow, none); }
 
 #tp-summary {
     position: fixed; font-family: 'Space Grotesk', sans-serif;
