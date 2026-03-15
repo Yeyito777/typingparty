@@ -43,7 +43,7 @@ const settings = definePluginSettings({
     },
     honoredOneAudioUrl: {
         type: OptionType.STRING,
-        description: "Audio for Honored One rank — SoundCloud/YouTube track URL or direct .mp3/.ogg/.wav link.",
+        description: "Audio track for a certain secret — SoundCloud/YouTube URL or direct .mp3/.ogg/.wav link.",
         default: "https://soundcloud.com/dimitar-tasev-789043651/the-honored-one-japanese-ver-satoru-gojo",
     },
 });
@@ -79,10 +79,6 @@ const CONFETTI_COLORS = [
     "#ff6b6b", "#ffd93d", "#6bcb77", "#4d96ff",
     "#ff6fff", "#845ef7", "#ff922b", "#20c997",
 ];
-
-function pickConfettiColor(): string {
-    return CONFETTI_COLORS[Math.floor(Math.random() * CONFETTI_COLORS.length)];
-}
 
 // Single shared animation loop — one rAF for all particles instead of one per particle.
 // Particles use transform:translate() which is GPU-composited (no layout reflow per frame).
@@ -134,8 +130,6 @@ function getChatEl(): HTMLElement | null {
 
 let combo              = 0;
 let comboTimer: ReturnType<typeof setTimeout> | null = null;
-let messagesSentInWindow = 0;
-let lastMessageTime    = 0;
 let usedBackspace      = false;
 let cleanSendStreak    = 0; // consecutive clean sends
 
@@ -437,7 +431,6 @@ function updateHud() {
         hudFillEl.style.width      = `${pct}%`;
         hudFillEl.style.background = honoredOneActive ? "#c77dff" : rank.color;
         hudFillEl.style.boxShadow  = rankIdx >= 4 ? `0 0 6px ${rank.color}` : "none";
-
     }
 
     if (hudComboEl) { hudComboEl.textContent = String(combo); hudComboEl.style.color = rank.color; }
@@ -472,7 +465,7 @@ function spawnConfetti(x: number, y: number) {
     const now = performance.now();
     for (let i = 0; i < count; i++) {
         const el    = document.createElement("div");
-        const color = pickConfettiColor();
+        const color = CONFETTI_COLORS[Math.floor(Math.random() * CONFETTI_COLORS.length)];
         const size  = 3 + Math.random() * 5;
         const ang   = Math.random() * Math.PI * 2;
         const vel   = 30 + Math.random() * 60;
@@ -493,7 +486,7 @@ function spawnBurst(x: number, y: number, count: number) {
     const now = performance.now();
     for (let i = 0; i < count; i++) {
         const el    = document.createElement("div");
-        const color = pickConfettiColor();
+        const color = CONFETTI_COLORS[Math.floor(Math.random() * CONFETTI_COLORS.length)];
         const size  = 4 + Math.random() * 6;
         // Fan upward: angle biased toward the top half of the circle
         const ang   = -Math.PI + Math.random() * Math.PI; // -180° to 0° (upward arc)
@@ -544,8 +537,6 @@ function showSendEffect(sendCombo: number, rankIdx: number) {
 }
 
 // ── Honored One ───────────────────────────────────────────────────────────────
-
-// ── Honored One moments ───────────────────────────────────────────────────────
 
 // ~1:06 — Red (赫) and Blue (蒼) orbs appear on opposite sides and converge toward center
 function triggerRedBlue() {
@@ -796,11 +787,6 @@ function softDamage() {
 }
 
 function onMessageSent() {
-    const now = Date.now();
-    if (now - lastMessageTime < 5000) messagesSentInWindow++;
-    else messagesSentInWindow = 1;
-    lastMessageTime = now;
-
     const wasClean  = !usedBackspace;
     const sendCombo = combo;
     const rankIdx   = getRankIndex(styleScore);
@@ -917,7 +903,6 @@ export default definePlugin({
         combo = 0; styleScore = 0; usedBackspace = false; cleanSendStreak = 0;
         keystrokeIntervals = []; wpmTimestamps = []; wpm = 0;
         lastRhythmTime = 0; flowStateCooldown = 0; lastShakeTime = 0;
-        messagesSentInWindow = 0; lastMessageTime = 0;
         prevRankIdx = 0; hudShown = false;
         resetSessionStats();
         cachedBarEl = null; cachedChatEl = null;
