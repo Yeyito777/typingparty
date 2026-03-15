@@ -394,7 +394,10 @@ function updateHud() {
     if (wpm > peakWpm) peakWpm = wpm;
     if (combo > highCombo) highCombo = combo;
 
-    if (rankIdx !== prevRankIdx) prevRankIdx = rankIdx;
+    if (rankIdx !== prevRankIdx) {
+        if (rankIdx > prevRankIdx && rankIdx >= 2) showPopup(RANKS[rankIdx].label, RANKS[rankIdx].color);
+        prevRankIdx = rankIdx;
+    }
     updateBarGlow(rankIdx);
 
     // Activate at 300 WPM, but stay active down to 200 (hysteresis)
@@ -485,24 +488,33 @@ function spawnBurst(x: number, y: number, count: number) {
 }
 
 function showSendEffect(sendCombo: number, rankIdx: number) {
-    if (rankIdx < 1) return; // D rank — no celebration
     const bar = getBarEl();
     if (!bar) return;
     const rect = bar.getBoundingClientRect();
 
-    // Burst fans upward from the message bar — denser at higher ranks
-    if (settings.store.enableConfetti) {
-        const count = 6 + rankIdx * 3 + (sendCombo >= 10 ? 6 : 0);
-        const x = rect.left + rect.width * 0.55 + Math.random() * rect.width * 0.3;
-        const y = rect.top + rect.height * 0.4;
-        spawnBurst(x, y, Math.min(count, 24));
+    // Quick flash on the message bar — subtle white pulse
+    bar.animate(
+        [
+            { boxShadow: "0 0 0 0 rgba(255,255,255,0)" },
+            { boxShadow: "0 0 12px 2px rgba(255,255,255,0.15)" },
+            { boxShadow: "0 0 0 0 rgba(255,255,255,0)" },
+        ],
+        { duration: 350, easing: "ease-out" }
+    );
+
+    // Burst fans upward — always fires on clean send (even D rank)
+    if (particleContainer) {
+        const count = 4 + rankIdx * 2 + (sendCombo >= 20 ? 6 : 0);
+        const x = rect.left + rect.width * 0.5 + (Math.random() - 0.5) * rect.width * 0.4;
+        const y = rect.top + rect.height * 0.3;
+        spawnBurst(x, y, Math.min(count, 20));
     }
 
-    // Popup label: only when clean and combo is worth noting
-    const rank = RANKS[rankIdx];
-    const label = sendCombo >= 50 ? "flawless" :
-                  sendCombo >= 25 ? `${sendCombo}×` :
-                  sendCombo >= 10 ? "clean" : "";
+    // Popup — lower thresholds so you actually see them
+    const rank = RANKS[Math.max(rankIdx, 1)];
+    const label = sendCombo >= 40 ? "flawless" :
+                  sendCombo >= 20 ? "perfect" :
+                  sendCombo >= 8  ? "clean" : "";
     if (label) showPopup(label, rank.color);
 }
 
@@ -768,7 +780,7 @@ function onMessageSent() {
     const sendCombo = combo;
     const rankIdx   = getRankIndex(styleScore);
 
-    if (wasClean && combo > 3) styleScore = Math.min(100, styleScore + 20);
+    if (wasClean && combo > 0) styleScore = Math.min(100, styleScore + 8 + Math.min(combo, 20));
 
     // Show send celebration BEFORE resetting state so we can read rank/combo
     if (wasClean) showSendEffect(sendCombo, rankIdx);
