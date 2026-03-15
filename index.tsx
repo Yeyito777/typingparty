@@ -601,13 +601,13 @@ function activateHonoredOne() {
     const embedUrl     = isDirectFile ? null : buildEmbedUrl(url);
 
     // Dramatic moments keyed to the track (offsets relative to activation):
-    //   +5s  = audio starts (see honoredOneAudioTimer delay below)
-    //   +81s = 1:16 Murasaki flash (5s delay + 76s into track)
-    //   +115s= 1:50 crash sequence (5s delay + 110s into track)
-    honoredOnePurpleTimer = setTimeout(triggerMurasakiFlash, 81_000);
-    honoredOneCrashTimer  = setTimeout(triggerFakeCrash,    115_000);
+    //   +1s   = audio starts
+    //   +77s  = 1:16 Murasaki flash (1s delay + 76s into track)
+    //   +111s = 1:50 crash sequence (1s delay + 110s into track)
+    honoredOnePurpleTimer = setTimeout(triggerMurasakiFlash, 76_000);  // 1s audio delay + 1:15 into track
+    honoredOneCrashTimer  = setTimeout(triggerFakeCrash,    111_000); // 1s audio delay + 1:50 into track
 
-    // 5-second delay so the banner has time to breathe before the music drops
+    // 1-second delay — banner shows, then music drops right after
     honoredOneAudioTimer = setTimeout(() => {
         honoredOneAudioTimer = null;
         if (!honoredOneActive) return; // deactivated during the delay
@@ -625,7 +625,7 @@ function activateHonoredOne() {
         } else {
             spawnHonoredIframe(embedUrl);
         }
-    }, 5000);
+    }, 1000);
 }
 
 function deactivateHonoredOne() {
