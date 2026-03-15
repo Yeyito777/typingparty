@@ -28,18 +28,7 @@ A [Vencord](https://vencord.dev/) plugin that turns Discord typing into a DMC-in
 
 DEVIL has 12 pts/100ms active drain, requiring ~160+ WPM to sustain.
 
-## The Honored One
-
-Hit **300 WPM** and something special happens:
-
-- A banner appears: **"✦ honored one ✦"**
-- 1 second later, music starts playing (SoundCloud embed, configurable)
-- Confetti and shake are suppressed — replaced by a **golden stagelight** that slowly fades in from above, like Gojo's awakening
-- At **1:16** into the track — Gojo says "Murasaki" — the entire screen flashes purple
-- At **1:50** — Discord "crashes" with a fake BSOD: `:( stop code: HONORED_ONE_ACHIEVED`
-- You must **maintain 300 WPM** or it instantly ends. No grace period.
-
-The audio playback works via Electron main-process injection (`native.ts`), bypassing Chromium's autoplay policy entirely.
+There's a secret rank beyond DEVIL. You'll know when you find it.
 
 ## Installation
 
@@ -58,8 +47,8 @@ The audio playback works via Electron main-process injection (`native.ts`), bypa
 
 ### Files
 
-- `index.tsx` — main plugin (renderer process): HUD, style meter, confetti, shake, Honored One visuals
-- `native.ts` — Electron main process hook: forces audio playback in SoundCloud/YouTube iframes
+- `index.tsx` — main plugin (renderer process): HUD, style meter, confetti, shake, and more
+- `native.ts` — Electron main process hook for audio playback
 
 ## Settings
 
@@ -70,7 +59,7 @@ The audio playback works via Electron main-process injection (`native.ts`), bypa
 | Shake Intensity | 1 | Screen shake cap (1 = subtle, 8 = full) |
 | Confetti Density | 1 | Particles per keystroke |
 | Combo Timeout | 3s | Seconds of inactivity before combo resets |
-| Honored One Audio | SoundCloud link | Audio URL for the secret rank |
+| Audio URL | SoundCloud link | Audio URL for a certain something... |
 
 ## Performance
 

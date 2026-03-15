@@ -232,7 +232,7 @@ function startDrainLoop() {
     drainInterval = setInterval(() => {
         // Recalculate WPM so it decays naturally when typing stops
         recalcWpm();
-        if (honoredOneActive && wpm < 300) deactivateHonoredOne();
+        if (honoredOneActive && wpm < 200) deactivateHonoredOne();
 
         if (styleScore <= 0) {
             if (!summaryTriggered && !summaryTimeout && (peakRankIdx > 1 || highCombo > 5)) {
@@ -396,16 +396,16 @@ function updateHud() {
     if (rankIdx !== prevRankIdx) prevRankIdx = rankIdx;
     updateBarGlow(rankIdx);
 
-    const isHonoredOne = wpm >= 300;
-    if (isHonoredOne && !honoredOneActive) activateHonoredOne();
-    else if (!isHonoredOne && honoredOneActive) deactivateHonoredOne();
+    // Activate at 300 WPM, but stay active down to 200 (hysteresis)
+    if (wpm >= 300 && !honoredOneActive) activateHonoredOne();
+    else if (honoredOneActive && wpm < 200) deactivateHonoredOne();
 
-    hud.dataset.rank = isHonoredOne ? "honored" : rank.id;
+    hud.dataset.rank = honoredOneActive ? "honored" : rank.id;
     hud.classList.toggle("tp-visible", styleScore > 0 || honoredOneActive);
 
     if (hudRankEl) {
-        hudRankEl.textContent = isHonoredOne ? "✦" : rank.label;
-        hudRankEl.style.color = isHonoredOne ? "#e8d5ff" : rank.color;
+        hudRankEl.textContent = honoredOneActive ? "✦" : rank.label;
+        hudRankEl.style.color = honoredOneActive ? "#e8d5ff" : rank.color;
     }
 
     if (hudFillEl) {
@@ -413,7 +413,7 @@ function updateHud() {
         const hi  = rankIdx < RANKS.length - 1 ? RANKS[rankIdx + 1].min : 100;
         const pct = hi > lo ? Math.max(0, Math.min(100, (styleScore - lo) / (hi - lo) * 100)) : 100;
         hudFillEl.style.width      = `${pct}%`;
-        hudFillEl.style.background = isHonoredOne ? "#c77dff" : rank.color;
+        hudFillEl.style.background = honoredOneActive ? "#c77dff" : rank.color;
         hudFillEl.style.boxShadow  = rankIdx >= 4 ? `0 0 6px ${rank.color}` : "none";
     }
 
@@ -426,7 +426,7 @@ function updateHud() {
     }
 
     if (hudPkEl && hudPkSep) {
-        const show = peakRankIdx > rankIdx && peakRankIdx > 1 && !isHonoredOne;
+        const show = peakRankIdx > rankIdx && peakRankIdx > 1 && !honoredOneActive;
         hudPkEl.textContent              = show ? `pk:${RANKS[peakRankIdx].label}` : "";
         hudPkEl.style.color              = show ? RANKS[peakRankIdx].color : "";
         hudPkEl.style.display = hudPkSep.style.display = show ? "" : "none";
