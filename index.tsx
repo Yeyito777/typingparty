@@ -442,7 +442,7 @@ function destroyHud() {
 
 function spawnConfetti(x: number, y: number) {
     if (!settings.store.enableConfetti || !particleContainer) return;
-    if (honoredOneActive) return; // sleek — no confetti during Honored One
+    if (honoredOneActive || wpm > 400) return; // suppress at high WPM to prevent FPS death
     const tier = getRankIndex(styleScore);
     if (tier < 1) return;
     const count = Math.min(settings.store.confettiDensity + Math.floor(tier / 2), 6);
@@ -616,8 +616,6 @@ function activateHonoredOne() {
         const el = document.createElement("div");
         el.id = "tp-stagelight";
         document.body.appendChild(el);
-        // Smooth fade-in
-        el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 800, fill: "forwards", easing: "ease-in" });
     }, 3000);
 
     // 1-second delay — banner shows, then music drops right after
@@ -671,7 +669,7 @@ function deactivateHonoredOne() {
 
 function triggerShake() {
     if (!settings.store.enableScreenShake) return;
-    if (honoredOneActive) return; // sleek — no shake during Honored One
+    if (honoredOneActive || wpm > 400) return; // suppress at high WPM to prevent FPS death
     const rankIdx = getRankIndex(styleScore);
     if (rankIdx < 2) return;
 
@@ -1051,26 +1049,35 @@ const CSS_TEXT = `
     text-align: center; line-height: 2; letter-spacing: 1px;
 }
 
-/* ── Stagelight (Honored One) ─────────────────────────────────────────────── */
+/* ── Stagelight (Honored One) — golden Gojo awakening ────────────────────── */
 #tp-stagelight {
     position: fixed; inset: 0; z-index: 9997; pointer-events: none;
     background:
-        radial-gradient(ellipse 28% 100% at 50% 0%,
-            rgba(200,150,255,0.12) 0%,
-            rgba(155,89,182,0.06) 35%,
-            transparent 70%),
+        radial-gradient(ellipse 32% 100% at 50% 0%,
+            rgba(255,215,80,0.28) 0%,
+            rgba(255,180,40,0.14) 30%,
+            rgba(255,150,20,0.05) 55%,
+            transparent 75%),
+        radial-gradient(ellipse 18% 80% at 50% 0%,
+            rgba(255,240,180,0.18) 0%,
+            transparent 60%),
         linear-gradient(180deg,
-            rgba(200,150,255,0.05) 0%,
-            transparent 55%);
+            rgba(255,220,100,0.08) 0%,
+            transparent 50%);
     opacity: 0;
+    animation: tp-stagelight-in 2.5s ease-in forwards;
+}
+@keyframes tp-stagelight-in {
+    0%   { opacity: 0; }
+    100% { opacity: 1; }
 }
 #tp-stagelight::before {
     content: "";
     position: absolute;
     top: 0; left: 50%; transform: translateX(-50%);
-    width: 3px; height: 0;
-    background: linear-gradient(180deg, rgba(232,213,255,0.5), transparent);
-    animation: tp-stagelight-beam 1.2s ease-out 0.2s forwards;
+    width: 4px; height: 0;
+    background: linear-gradient(180deg, rgba(255,230,140,0.7), rgba(255,200,60,0.15), transparent);
+    animation: tp-stagelight-beam 2s ease-out 0.5s forwards;
 }
 @keyframes tp-stagelight-beam {
     0%   { height: 0; opacity: 0; }
