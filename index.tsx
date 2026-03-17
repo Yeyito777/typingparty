@@ -288,6 +288,9 @@ function startDrainLoop() {
 // ── Popup ─────────────────────────────────────────────────────────────────────
 
 function showPopup(text: string, color: string) {
+    // Cap at 4 concurrent popups to prevent DOM pile-up
+    const existing = document.querySelectorAll(".tp-popup");
+    if (existing.length >= 4) existing[0].remove();
     const bar = getBarEl();
     if (!bar) return;
     const rect = bar.getBoundingClientRect();
@@ -666,13 +669,16 @@ function destroyHud() {
 
 // ── Confetti ──────────────────────────────────────────────────────────────────
 
+const MAX_PARTICLES = 50; // hard cap to prevent FPS death
+
 function spawnConfetti(x: number, y: number) {
     if (!settings.store.enableConfetti || !particleContainer) return;
-    if (honoredOneActive || wpm > 400) return; // suppress at high WPM to prevent FPS death
+    if (honoredOneActive || wpm > 400 || particles.length >= MAX_PARTICLES) return;
     const tier = getRankIndex(styleScore);
     if (tier < 1) return;
     const count = Math.min(settings.store.confettiDensity + Math.floor(tier / 2), 6);
     const now = performance.now();
+    const frag = document.createDocumentFragment(); // batch DOM insert
     for (let i = 0; i < count; i++) {
         const el    = document.createElement("div");
         const color = CONFETTI_COLORS[Math.floor(Math.random() * CONFETTI_COLORS.length)];
@@ -680,11 +686,11 @@ function spawnConfetti(x: number, y: number) {
         const ang   = Math.random() * Math.PI * 2;
         const vel   = 30 + Math.random() * 60;
         const dur   = 500 + Math.random() * 500;
-        // Position set once; animation uses transform:translate() — no reflow per frame
         el.style.cssText = `position:fixed;left:${x}px;top:${y}px;width:${size}px;height:${size}px;background:${color};pointer-events:none;z-index:99999;border-radius:${Math.random() > 0.5 ? "50%" : "2px"};will-change:transform,opacity;`;
-        particleContainer.appendChild(el);
+        frag.appendChild(el);
         particles.push({ el, dx: Math.cos(ang) * vel, dy: Math.sin(ang) * vel - 25, rot: Math.random() * 360, t0: now, dur });
     }
+    particleContainer.appendChild(frag); // single reflow
     if (!particleRaf) particleRaf = requestAnimationFrame(tickParticles);
 }
 
@@ -692,20 +698,22 @@ function spawnConfetti(x: number, y: number) {
 
 // Raw particle spawner — no tier/rank guard, used for the send celebration.
 function spawnBurst(x: number, y: number, count: number) {
-    if (!particleContainer) return;
+    if (!particleContainer || particles.length >= MAX_PARTICLES) return;
+    count = Math.min(count, MAX_PARTICLES - particles.length);
     const now = performance.now();
+    const frag = document.createDocumentFragment();
     for (let i = 0; i < count; i++) {
         const el    = document.createElement("div");
         const color = CONFETTI_COLORS[Math.floor(Math.random() * CONFETTI_COLORS.length)];
         const size  = 4 + Math.random() * 6;
-        // Fan upward: angle biased toward the top half of the circle
-        const ang   = -Math.PI + Math.random() * Math.PI; // -180° to 0° (upward arc)
+        const ang   = -Math.PI + Math.random() * Math.PI;
         const vel   = 50 + Math.random() * 90;
         const dur   = 700 + Math.random() * 600;
         el.style.cssText = `position:fixed;left:${x}px;top:${y}px;width:${size}px;height:${size}px;background:${color};pointer-events:none;z-index:99999;border-radius:${Math.random() > 0.4 ? "50%" : "2px"};will-change:transform,opacity;`;
-        particleContainer.appendChild(el);
+        frag.appendChild(el);
         particles.push({ el, dx: Math.cos(ang) * vel, dy: Math.sin(ang) * vel - 20, rot: Math.random() * 360, t0: now, dur });
     }
+    particleContainer.appendChild(frag);
     if (!particleRaf) particleRaf = requestAnimationFrame(tickParticles);
 }
 
