@@ -1,19 +1,25 @@
 # TypingParty
 
-A [Vencord](https://vencord.dev/) plugin that turns Discord typing into a DMC-inspired style meter — rewarding speed and rhythm with confetti, screenshake, rank-up drama, and a secret ultimate rank.
+A [Vencord](https://vencord.dev/) plugin that turns Discord typing into a skating-game-style meter — rewarding speed, rhythm, and tricks with confetti, combos, multipliers, and a secret ultimate rank.
 
 ## Features
 
-- **Style meter** — gain style points through typing speed and rhythm consistency. Points drain over time; higher ranks drain faster.
-- **Combo system** — every keystroke builds your combo. Inactivity breaks it. Milestones at 10x/25x/50x/100x give bonus style + popups.
-- **Rolling WPM** — 2-second sliding window, recalculated 10x/sec so it responds instantly.
-- **Confetti** — particles burst from your caret as you type. Density scales with rank. GPU-composited via a single shared `requestAnimationFrame` loop.
-- **Screen shake** — chat area shakes at B rank and above. Intensity scales with rank and user setting.
-- **Flow state** — 6+ consistent keystrokes at high rhythm consistency triggers a "flow state" bonus.
-- **Send celebration** — sending a message with no backspaces triggers a confetti burst and popup ("clean", combo count, or "flawless").
-- **Backspace forgiveness** — small penalty (6 style, combo -3) instead of a full combo break.
-- **Session summary** — after you stop typing, shows your modal (most common) rank, peak rank, high combo, and peak WPM.
-- **Bar glow** — the message bar gets a subtle glow at S rank and above.
+- **Style meter** — gain style points through typing speed and rhythm. Points drain over time; higher ranks drain faster.
+- **Combo system** — every keystroke builds your combo. Milestones at 5x/10x/20x/35x/50x/75x/100x give bonus style + popups.
+- **Multiplier** — tricks and challenges boost your multiplier (up to 5.0x). All style gains are multiplied. Decays over time.
+- **Trick detection** — automatic tricks reward your typing patterns:
+  - **Burst** — 6+ rapid-fire keys (< 90ms avg interval). +0.4x multiplier.
+  - **Flow** — sustained rhythm consistency for 6+ strokes. +0.3x multiplier.
+  - **Speed Demon** — 180+ WPM sustained for 3+ seconds. +0.6x multiplier.
+  - **Rank Up** — climbing to B or higher. +0.3x multiplier.
+- **Typing challenges** — MonkeyType-style phrases pop up at B rank and above. Type them character-perfect for massive style + 0.8x multiplier. Wrong key = soft fail. No penalty.
+- **Rolling WPM** — 4-second sliding window, recalculated 10x/sec. Doesn't hard-reset on send.
+- **Confetti** — particles burst from your caret. GPU-composited via a single shared `requestAnimationFrame` loop.
+- **Screen shake** — chat area shakes at B rank and above. Intensity scales with rank.
+- **Send celebration** — clean sends (no backspaces) trigger confetti bursts and streak popups.
+- **Backspace forgiveness** — small penalty instead of full combo break.
+- **Session summary** — shows modal rank, peak rank, high combo, and peak WPM after you stop.
+- **Bar glow** — message bar glows at S rank and above.
 
 ## Ranks
 
@@ -21,12 +27,10 @@ A [Vencord](https://vencord.dev/) plugin that turns Discord typing into a DMC-in
 |-------|------------|------|
 | D     | 0          | Just warming up |
 | C     | 18         | Getting there |
-| B     | 38         | Respectable |
+| B     | 38         | Respectable — challenges start appearing |
 | A     | 58         | Serious |
 | S     | 78         | Elite |
 | DEVIL | 92         | Brutal drain — you glimpse it, you don't live in it |
-
-DEVIL has 12 pts/100ms active drain, requiring ~160+ WPM to sustain.
 
 There's a secret rank beyond DEVIL. You'll know when you find it.
 
@@ -34,21 +38,16 @@ There's a secret rank beyond DEVIL. You'll know when you find it.
 
 ### Vesktop (recommended)
 
-1. Clone this repo into your Vencord plugins directory:
-   ```
-   ~/.config/vesktop/sessionData/vencordFiles/
-   ```
-   Or, if building from source:
-2. Clone [Vencord](https://github.com/Vendicated/Vencord)
-3. Copy `index.tsx` and `native.ts` into `src/plugins/typingparty/`
-4. Run `pnpm build`
-5. Copy the built files from `dist/` to `~/.config/vesktop/sessionData/vencordFiles/`
-6. Restart Vesktop
+1. Clone [Vencord](https://github.com/Vendicated/Vencord)
+2. Copy `index.tsx` and `native.ts` into `src/plugins/typingparty/`
+3. Run `pnpm build`
+4. Copy the built files from `dist/` to `~/.config/vesktop/sessionData/vencordFiles/`
+5. Restart Vesktop
 
 ### Files
 
-- `index.tsx` — main plugin (renderer process): HUD, style meter, confetti, shake, and more
-- `native.ts` — Electron main process hook for audio playback
+- `index.tsx` — main plugin (renderer process): HUD, style meter, tricks, challenges, and all effects
+- `native.ts` — Electron main process hook for audio autoplay bypass
 
 ## Settings
 
@@ -59,15 +58,16 @@ There's a secret rank beyond DEVIL. You'll know when you find it.
 | Shake Intensity | 1 | Screen shake cap (1 = subtle, 8 = full) |
 | Confetti Density | 1 | Particles per keystroke |
 | Combo Timeout | 3s | Seconds of inactivity before combo resets |
-| Audio URL | SoundCloud link | Audio URL for a certain something... |
+| Audio URL | SoundCloud link | Audio track for a certain something... |
 
 ## Performance
 
 - Single shared `requestAnimationFrame` loop for all particles
-- `transform:translate()` for GPU-composited animation (no layout reflow)
-- DOM elements cached at creation time; Discord elements lazily cached with staleness checks
-- Confetti and shake auto-suppress above 400 WPM to prevent FPS drops
-- Drain loop runs at 10Hz (not per-keystroke)
+- `transform:translate()` / `transform:scale()` for GPU-composited animation (no layout reflow)
+- DOM elements cached at creation; Discord elements lazily cached with staleness checks
+- Confetti and shake auto-suppress above 400 WPM
+- Honored One effects use only opacity/transform animations (no `filter` animation, no `box-shadow` at scale)
+- Drain loop runs at 10Hz, not per-keystroke
 
 ## License
 

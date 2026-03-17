@@ -59,12 +59,12 @@ const RANKS = [
     { id: "devil", min: 92, label: "DEVIL", color: "#ff6b6b" },
 ] as const;
 
-// DEVIL drain is brutal — you glimpse it, you don't live in it
-const ACTIVE_DRAIN = [0.8, 1.0, 1.5, 2.5, 5.0, 12.0] as const;
-const IDLE_DRAIN   = [4.0, 4.0, 5.0, 6.5, 10.0, 20.0] as const;
+// Lower ranks drain gently so casual typists can still rank up
+const ACTIVE_DRAIN = [0.5, 0.6, 1.2, 2.2, 4.5, 12.0] as const;
+const IDLE_DRAIN   = [3.0, 3.5, 4.5, 6.0, 9.0, 20.0] as const;
 
-// Combo milestones: [threshold, style bonus]
-const COMBO_MILESTONES: [number, number][] = [[10, 6], [25, 10], [50, 15], [100, 22]];
+// More frequent milestones — dopamine hits like landing tricks
+const COMBO_MILESTONES: [number, number][] = [[5, 4], [10, 7], [20, 12], [35, 16], [50, 20], [75, 25], [100, 30]];
 
 function getRankIndex(score: number): number {
     for (let i = RANKS.length - 1; i >= 0; i--) {
@@ -112,6 +112,8 @@ let hudWpmEl:   HTMLElement | null = null;
 let hudWpmSep:  HTMLElement | null = null;
 let hudPkEl:    HTMLElement | null = null;
 let hudPkSep:   HTMLElement | null = null;
+let hudMultiEl: HTMLElement | null = null;
+let hudMultiSep: HTMLElement | null = null;
 
 // Cached Discord elements (lazily resolved, stable across channel switches)
 let cachedBarEl:  HTMLElement | null = null;
@@ -155,6 +157,22 @@ let summaryTriggered = false;
 
 let lastShakeTime = 0;
 
+// Multiplier system — stacks from tricks, decays over time
+let multiplier = 1.0;
+
+// Trick detection
+let lastBurstCheck       = 0;
+let speedDemonStart      = 0;
+let lastSpeedDemonTrigger = 0;
+
+// Typing challenge minigame
+let challengeActive  = false;
+let challengePhrase  = "";
+let challengeProgress = 0;
+let challengeEl:      HTMLDivElement | null = null;
+let challengeTimeout: ReturnType<typeof setTimeout> | null = null;
+let challengeCooldown = 0;
+
 let honoredOneActive       = false;
 let honoredOneAudioTimer:  ReturnType<typeof setTimeout> | null = null;
 let honoredOnePurpleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -166,10 +184,11 @@ let honoredOneAudio:  HTMLAudioElement  | null = null;
 
 // ── Rolling WPM ───────────────────────────────────────────────────────────────
 
+// 4-second rolling window — smoother, more accurate WPM than 2s
 function recordKeystrokeForWpm() {
     const now = Date.now();
     wpmTimestamps.push(now);
-    wpmTimestamps = wpmTimestamps.filter(t => t >= now - 2000);
+    wpmTimestamps = wpmTimestamps.filter(t => t >= now - 4000);
     const n = wpmTimestamps.length;
     if (n < 2) { wpm = 0; return; }
     const elapsed = (now - wpmTimestamps[0]) / 60000;
@@ -178,7 +197,7 @@ function recordKeystrokeForWpm() {
 
 function recalcWpm() {
     const now = Date.now();
-    wpmTimestamps = wpmTimestamps.filter(t => t >= now - 2000);
+    wpmTimestamps = wpmTimestamps.filter(t => t >= now - 4000);
     const n = wpmTimestamps.length;
     if (n < 2) { wpm = 0; return; }
     const elapsed = (now - wpmTimestamps[0]) / 60000;
@@ -212,15 +231,15 @@ function recordInterval() {
 // ── Style meter ───────────────────────────────────────────────────────────────
 
 function gainStyle() {
-    const speedBonus  = Math.min(wpm / 40, 4);
+    const speedBonus  = Math.min(wpm / 30, 5);
     const rhythmBonus = getRhythmConsistency() * 4;
-    styleScore = Math.min(100, styleScore + 1.5 + speedBonus + rhythmBonus);
+    styleScore = Math.min(100, styleScore + (2.5 + speedBonus + rhythmBonus) * multiplier);
 
     const now = Date.now();
     if (keystrokeIntervals.length >= 6 && getRhythmConsistency() >= 0.75 && now - flowStateCooldown > 10000) {
         flowStateCooldown = now;
-        styleScore = Math.min(100, styleScore + 15);
-        showPopup("flow state", "#4d96ff");
+        styleScore = Math.min(100, styleScore + 15 * multiplier);
+        boostMultiplier(0.3, "flow");
     }
 }
 
@@ -234,6 +253,13 @@ function startDrainLoop() {
         // Recalculate WPM so it decays naturally when typing stops
         recalcWpm();
         if (honoredOneActive && wpm < 200) deactivateHonoredOne();
+
+        // Multiplier decays toward 1.0
+        if (multiplier > 1.0) multiplier = Math.max(1.0, multiplier - 0.015);
+
+        // Typing challenge — random chance when at B rank or above, ~once per 50s
+        if (!challengeActive && !honoredOneActive && Math.random() < 0.002 && getRankIndex(styleScore) >= 2)
+            triggerChallenge();
 
         if (styleScore <= 0) {
             if (!summaryTriggered && !summaryTimeout && (peakRankIdx > 1 || highCombo > 5)) {
@@ -267,6 +293,136 @@ function showPopup(text: string, color: string) {
     el.textContent = text;
     document.body.appendChild(el);
     setTimeout(() => el.remove(), 1200);
+}
+
+// ── Multiplier ────────────────────────────────────────────────────────────────
+
+function boostMultiplier(amount: number, label: string) {
+    multiplier = Math.min(5.0, multiplier + amount);
+    showPopup(`${label} ${multiplier.toFixed(1)}×`, "#ffd93d");
+}
+
+// ── Trick detection ──────────────────────────────────────────────────────────
+
+function detectTricks() {
+    const now = Date.now();
+
+    // Burst — very fast sequence of 6+ keys (avg < 90ms between keys)
+    if (keystrokeIntervals.length >= 6) {
+        const avg = keystrokeIntervals.reduce((a, b) => a + b, 0) / keystrokeIntervals.length;
+        if (avg < 90 && now - lastBurstCheck > 8000) {
+            lastBurstCheck = now;
+            boostMultiplier(0.4, "burst");
+        }
+    }
+
+    // Speed demon — sustained 180+ WPM for 3+ seconds
+    if (wpm >= 180) {
+        if (!speedDemonStart) speedDemonStart = now;
+        else if (now - speedDemonStart > 3000 && now - lastSpeedDemonTrigger > 15000) {
+            lastSpeedDemonTrigger = now;
+            boostMultiplier(0.6, "speed demon");
+        }
+    } else {
+        speedDemonStart = 0;
+    }
+}
+
+// ── Typing challenge minigame ────────────────────────────────────────────────
+
+const CHALLENGE_PHRASES = [
+    "hollow purple", "domain expansion", "black flash",
+    "unlimited void", "stand proud", "nah id win",
+    "with this treasure i summon", "you are strong",
+    "cursed technique", "reverse cursed", "six eyes",
+    "malevolent shrine", "throughout heaven and earth",
+    "chimera shadow garden", "smokin sick style",
+    "jackpot", "now im motivated", "devil may cry",
+    "dead weight", "this party is getting crazy",
+    "typing party", "combo breaker", "perfect send",
+    "infinite potential", "resonance", "convergence",
+    "the strongest", "im the real deal",
+];
+
+function triggerChallenge() {
+    if (challengeActive || honoredOneActive) return;
+    const now = Date.now();
+    if (now - challengeCooldown < 30000) return;
+    challengeCooldown = now;
+
+    challengePhrase = CHALLENGE_PHRASES[Math.floor(Math.random() * CHALLENGE_PHRASES.length)];
+    challengeProgress = 0;
+    challengeActive = true;
+
+    const bar = getBarEl();
+    if (!bar) return;
+    const rect = bar.getBoundingClientRect();
+
+    challengeEl = document.createElement("div");
+    challengeEl.id = "tp-challenge";
+    challengeEl.style.cssText = `right:${window.innerWidth - rect.right + 8}px;bottom:${window.innerHeight - rect.top + 70}px;`;
+    challengeEl.innerHTML = `
+        <div class="tp-chal-label">type this</div>
+        <div class="tp-chal-phrase">
+            <span class="tp-chal-done"></span><span class="tp-chal-cursor">${challengePhrase[0]}</span><span class="tp-chal-remaining">${challengePhrase.slice(1)}</span>
+        </div>
+        <div class="tp-chal-timer"></div>
+    `;
+    document.body.appendChild(challengeEl);
+
+    challengeTimeout = setTimeout(() => dismissChallenge(), 10000);
+}
+
+function checkChallenge(key: string) {
+    if (!challengeActive || !challengeEl) return;
+
+    const expected = challengePhrase[challengeProgress];
+    if (key === expected) {
+        challengeProgress++;
+
+        const done = challengeEl.querySelector(".tp-chal-done") as HTMLElement;
+        const cursor = challengeEl.querySelector(".tp-chal-cursor") as HTMLElement;
+        const remaining = challengeEl.querySelector(".tp-chal-remaining") as HTMLElement;
+
+        if (done) done.textContent = challengePhrase.slice(0, challengeProgress);
+
+        if (challengeProgress >= challengePhrase.length) {
+            completeChallenge();
+            return;
+        }
+
+        if (cursor) cursor.textContent = challengePhrase[challengeProgress];
+        if (remaining) remaining.textContent = challengePhrase.slice(challengeProgress + 1);
+    } else {
+        dismissChallenge();
+    }
+}
+
+function completeChallenge() {
+    if (!challengeActive) return;
+    challengeActive = false;
+    if (challengeTimeout) { clearTimeout(challengeTimeout); challengeTimeout = null; }
+
+    const bonus = 12 + challengePhrase.length;
+    styleScore = Math.min(100, styleScore + bonus);
+    boostMultiplier(0.8, "challenge");
+
+    if (challengeEl) {
+        challengeEl.classList.add("tp-chal-complete");
+        setTimeout(() => { challengeEl?.remove(); challengeEl = null; }, 800);
+    }
+    updateHud();
+}
+
+function dismissChallenge() {
+    if (!challengeActive) return;
+    challengeActive = false;
+    if (challengeTimeout) { clearTimeout(challengeTimeout); challengeTimeout = null; }
+
+    if (challengeEl) {
+        challengeEl.style.animation = "tp-fade-out 0.3s ease-out forwards";
+        setTimeout(() => { challengeEl?.remove(); challengeEl = null; }, 300);
+    }
 }
 
 // ── Bar glow ──────────────────────────────────────────────────────────────────
@@ -357,6 +513,8 @@ function createHud() {
                 <span id="tp-wpm-val"></span>
                 <span class="tp-sep tp-pk-sep">·</span>
                 <span id="tp-peak-val"></span>
+                <span class="tp-sep tp-multi-sep">·</span>
+                <span id="tp-multi-val"></span>
             </div>
         </div>
     `;
@@ -370,6 +528,8 @@ function createHud() {
     hudWpmSep  = hud.querySelector(".tp-wpm-sep");
     hudPkEl    = hud.querySelector("#tp-peak-val");
     hudPkSep   = hud.querySelector(".tp-pk-sep");
+    hudMultiEl  = hud.querySelector("#tp-multi-val");
+    hudMultiSep = hud.querySelector(".tp-multi-sep");
 
     particleContainer = document.createElement("div");
     particleContainer.id = "tp-particles";
@@ -398,6 +558,18 @@ function updateHud() {
     if (rankIdx !== prevRankIdx) {
         if (rankIdx > prevRankIdx && rankIdx >= 2) {
             showPopup(RANKS[rankIdx].label, RANKS[rankIdx].color);
+            boostMultiplier(0.3, "rank up");
+            // Rank letter punch animation
+            if (hudRankEl) {
+                hudRankEl.animate(
+                    [
+                        { transform: "scale(1)" },
+                        { transform: "scale(1.5)", textShadow: `0 0 20px ${RANKS[rankIdx].color}` },
+                        { transform: "scale(1)" },
+                    ],
+                    { duration: 400, easing: "cubic-bezier(0.34, 1.3, 0.64, 1)" }
+                );
+            }
         }
         prevRankIdx = rankIdx;
     }
@@ -447,11 +619,17 @@ function updateHud() {
         hudPkEl.style.color              = show ? RANKS[peakRankIdx].color : "";
         hudPkEl.style.display = hudPkSep.style.display = show ? "" : "none";
     }
+
+    if (hudMultiEl && hudMultiSep) {
+        const show = multiplier > 1.05;
+        hudMultiEl.textContent = show ? `${multiplier.toFixed(1)}×` : "";
+        hudMultiEl.style.display = hudMultiSep.style.display = show ? "" : "none";
+    }
 }
 
 function destroyHud() {
     hud?.remove(); hud = null; particleContainer?.remove(); particleContainer = null;
-    hudRankEl = hudFillEl = hudComboEl = hudWpmEl = hudWpmSep = hudPkEl = hudPkSep = null;
+    hudRankEl = hudFillEl = hudComboEl = hudWpmEl = hudWpmSep = hudPkEl = hudPkSep = hudMultiEl = hudMultiSep = null;
 }
 
 // ── Confetti ──────────────────────────────────────────────────────────────────
@@ -560,23 +738,66 @@ function triggerMurasakiFlash() {
     document.getElementById("tp-orb-red")?.remove();
     document.getElementById("tp-orb-blue")?.remove();
 
+    // 1. Blinding white flash — solid color, cheapest possible fullscreen overlay
+    const flash = document.createElement("div");
+    flash.id = "tp-murasaki-flash";
+    document.body.appendChild(flash);
+    setTimeout(() => flash.remove(), 700);
+
+    // 2. Shockwave ring — staggered 120ms so it emerges as flash fades
+    setTimeout(() => {
+        if (!honoredOneActive) return;
+        const ring = document.createElement("div");
+        ring.id = "tp-murasaki-ring";
+        document.body.appendChild(ring);
+        setTimeout(() => ring.remove(), 1200);
+    }, 120);
+
+    // 3. Technique name — 虚式「茈」 — staggered 300ms for sequence feel
+    setTimeout(() => {
+        if (!honoredOneActive) return;
+        const kanji = document.createElement("div");
+        kanji.id = "tp-murasaki-kanji";
+        kanji.textContent = "虚式「茈」";
+        document.body.appendChild(kanji);
+        setTimeout(() => kanji.remove(), 3200);
+    }, 300);
+
+    // 4. Hard screen shake on impact
+    const chat = getChatEl();
+    if (chat) {
+        chat.animate(
+            [
+                { transform: "translate(0,0)" },
+                { transform: "translate(-8px,6px)" },
+                { transform: "translate(10px,-7px)" },
+                { transform: "translate(-5px,4px)" },
+                { transform: "translate(0,0)" },
+            ],
+            { duration: 350, easing: "ease-out" }
+        );
+    }
+
+    // 5. The persistent purple overlay
     const el = document.createElement("div");
     el.id = "tp-murasaki";
     document.body.appendChild(el);
 
-    // Hard flash on impact, then settle into a persistent purple haze
-    el.animate(
+    // Hard flash on impact, then settle into a breathing purple haze
+    const anim = el.animate(
         [
             { opacity: 0 },
-            { opacity: 1, offset: 0.03 },
-            { opacity: 0.7, offset: 0.12 },
-            { opacity: 1, offset: 0.2 },
-            { opacity: 0.55, offset: 0.5 },
-            { opacity: 0.4 },
+            { opacity: 1, offset: 0.02 },
+            { opacity: 0.6, offset: 0.08 },
+            { opacity: 1, offset: 0.15 },
+            { opacity: 0.7, offset: 0.25 },
+            { opacity: 1, offset: 0.35 },
+            { opacity: 0.45 },
         ],
-        { duration: 4000, easing: "ease-in-out", fill: "forwards" }
+        { duration: 5000, easing: "ease-in-out", fill: "forwards" }
     );
-    // Purple persists — removed only on deactivate or crash
+    // Once settled, switch to CSS breathing animation
+    anim.onfinish = () => { anim.cancel(); el.classList.add("tp-murasaki-breathe"); };
 }
 
 // 1:43 — Climax. Discord "crashes". Stays for 6 seconds then fades.
@@ -700,6 +921,9 @@ function deactivateHonoredOne() {
     if (honoredOneStagelightTimer)  { clearTimeout(honoredOneStagelightTimer);  honoredOneStagelightTimer  = null; }
     if (honoredOneRedBlueTimer)     { clearTimeout(honoredOneRedBlueTimer);     honoredOneRedBlueTimer     = null; }
     document.getElementById("tp-murasaki")?.remove();
+    document.getElementById("tp-murasaki-flash")?.remove();
+    document.getElementById("tp-murasaki-ring")?.remove();
+    document.getElementById("tp-murasaki-kanji")?.remove();
     document.getElementById("tp-crash")?.remove();
     document.getElementById("tp-orb-red")?.remove();
     document.getElementById("tp-orb-blue")?.remove();
@@ -798,7 +1022,7 @@ function onMessageSent() {
     else cleanSendStreak = 0; // backspace breaks the streak
 
     usedBackspace = false;
-    wpmTimestamps = []; wpm = 0; combo = 0;
+    combo = 0; // WPM decays naturally via the 4s window — don't hard-reset
     updateHud();
 }
 
@@ -811,6 +1035,9 @@ function onKeyDown(e: KeyboardEvent) {
 
     dismissSummary();
 
+    // Challenge check runs before everything — single-char keys only
+    if (challengeActive && e.key.length === 1) checkChallenge(e.key);
+
     if (e.key === "Backspace" || e.key === "Delete") {
         softDamage();
         return;
@@ -820,6 +1047,7 @@ function onKeyDown(e: KeyboardEvent) {
     recordKeystrokeForWpm();
     incrementCombo();
     gainStyle();
+    detectTricks();
     // Confetti at caret; collapsed-range rects can be all-zero in some Discord builds
     const sel = window.getSelection();
     let cx: number, cy: number;
@@ -892,6 +1120,7 @@ export default definePlugin({
         const bar = getBarEl();
         if (bar) bar.style.boxShadow = "";
 
+        dismissChallenge();
         document.getElementById("tp-summary")?.remove();
         document.getElementById("tp-honored-banner")?.remove();
         document.getElementById("tp-stagelight")?.remove();
@@ -903,6 +1132,8 @@ export default definePlugin({
         combo = 0; styleScore = 0; usedBackspace = false; cleanSendStreak = 0;
         keystrokeIntervals = []; wpmTimestamps = []; wpm = 0;
         lastRhythmTime = 0; flowStateCooldown = 0; lastShakeTime = 0;
+        multiplier = 1.0; lastBurstCheck = 0; speedDemonStart = 0; lastSpeedDemonTrigger = 0;
+        challengeCooldown = 0;
         prevRankIdx = 0; hudShown = false;
         resetSessionStats();
         cachedBarEl = null; cachedChatEl = null;
@@ -1006,6 +1237,7 @@ const CSS_TEXT = `
 .tp-sep { opacity: 0.25; }
 #tp-wpm-val  { color: rgba(255,255,255,0.28); }
 #tp-peak-val { font-weight: 600; }
+#tp-multi-val { color: #ffd93d; font-weight: 600; }
 
 .tp-popup {
     position: fixed;
@@ -1041,6 +1273,50 @@ const CSS_TEXT = `
 @keyframes tp-fade-out {
     0%   { opacity: 1; transform: translateY(0); }
     100% { opacity: 0; transform: translateY(6px); }
+}
+
+/* ── Typing challenge ──────────────────────────────────────────────────────── */
+#tp-challenge {
+    position: fixed;
+    font-family: 'Space Grotesk', sans-serif;
+    pointer-events: none; z-index: 9999;
+    background: rgba(18,19,22,0.95);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 10px; padding: 10px 16px;
+    backdrop-filter: blur(12px);
+    box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+    animation: tp-summary-in 0.3s ease-out forwards;
+}
+.tp-chal-label {
+    font-size: 8px; font-weight: 400; letter-spacing: 3px;
+    color: rgba(255,255,255,0.25); text-transform: lowercase;
+    margin-bottom: 6px;
+}
+.tp-chal-phrase {
+    font-size: 16px; font-weight: 500; letter-spacing: 1px;
+    line-height: 1.4; white-space: nowrap;
+}
+.tp-chal-done { color: #40c057; }
+.tp-chal-cursor { color: #fff; text-decoration: underline; }
+.tp-chal-remaining { color: rgba(255,255,255,0.2); }
+.tp-chal-timer {
+    margin-top: 6px; height: 2px; border-radius: 1px;
+    background: rgba(255,217,61,0.5);
+    animation: tp-chal-countdown 10s linear forwards;
+}
+@keyframes tp-chal-countdown {
+    0%   { width: 100%; }
+    80%  { background: rgba(255,217,61,0.5); }
+    100% { width: 0%; background: rgba(255,107,107,0.5); }
+}
+.tp-chal-complete {
+    border-color: rgba(64,192,87,0.3) !important;
+    animation: tp-chal-success 0.8s ease-out forwards !important;
+}
+@keyframes tp-chal-success {
+    0%   { opacity: 1; transform: scale(1); }
+    25%  { opacity: 1; transform: scale(1.06); border-color: rgba(64,192,87,0.5); }
+    100% { opacity: 0; transform: scale(0.95) translateY(-10px); }
 }
 
 /* ── Honored One ─────────────────────────────────────────────────────────────── */
@@ -1085,6 +1361,7 @@ const CSS_TEXT = `
     position: fixed; top: 50%; width: 120px; height: 120px;
     border-radius: 50%; pointer-events: none; z-index: 999997;
     filter: blur(30px);
+    will-change: translate, scale, opacity;
     animation: tp-orb-converge 9s ease-in forwards;
 }
 #tp-orb-red {
@@ -1103,14 +1380,70 @@ const CSS_TEXT = `
     0%   { opacity: 0; translate: 0 0; scale: 0.5; }
     15%  { opacity: 1; scale: 1; }
     85%  { opacity: 1; scale: 1.3; }
-    100% { opacity: 1; translate: var(--tp-target-x) 0; scale: 0.6; filter: blur(50px) brightness(2); }
+    100% { opacity: 0; translate: var(--tp-target-x) 0; scale: 0.6; }
 }
 
 /* ── Murasaki (1:15.9) — persistent full-screen purple ───────────────────── */
 #tp-murasaki {
     position: fixed; inset: 0; z-index: 999998; pointer-events: none;
-    background: radial-gradient(ellipse at center, #b44dff 0%, #7b1fa2 35%, #4a007a 60%, #1a0033 100%);
+    background: radial-gradient(ellipse at center, #c864ff 0%, #9b30ff 25%, #7b1fa2 45%, #4a007a 65%, #1a0033 100%);
     opacity: 0;
+}
+.tp-murasaki-breathe {
+    animation: tp-murasaki-breathe 3.5s ease-in-out infinite alternate !important;
+}
+@keyframes tp-murasaki-breathe {
+    from { opacity: 0.35; }
+    to   { opacity: 0.52; }
+}
+
+/* White flash on Murasaki impact — solid color, no gradient compositing */
+#tp-murasaki-flash {
+    position: fixed; inset: 0; z-index: 999999; pointer-events: none;
+    background: #fff;
+    will-change: opacity;
+    animation: tp-murasaki-flash-anim 0.7s ease-out forwards;
+}
+@keyframes tp-murasaki-flash-anim {
+    0%   { opacity: 0; }
+    5%   { opacity: 1; }
+    15%  { opacity: 0.6; }
+    100% { opacity: 0; }
+}
+
+/* Expanding shockwave ring — border + opacity only, NO box-shadow (kills perf at scale) */
+#tp-murasaki-ring {
+    position: fixed; top: 50%; left: 50%;
+    width: 40px; height: 40px; margin: -20px 0 0 -20px;
+    border-radius: 50%;
+    border: 2.5px solid rgba(200,100,255,0.85);
+    pointer-events: none; z-index: 999999;
+    will-change: transform, opacity;
+    animation: tp-ring-expand 1.2s ease-out forwards;
+}
+@keyframes tp-ring-expand {
+    0%   { transform: scale(0.3); opacity: 1; }
+    25%  { opacity: 0.7; }
+    100% { transform: scale(30); opacity: 0; }
+}
+
+/* Technique kanji — 虚式「茈」 — NO filter:blur (forces re-rasterization per frame) */
+#tp-murasaki-kanji {
+    position: fixed; top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 72px; font-weight: 700;
+    color: #f0e0ff;
+    text-shadow: 0 0 30px #c77dff, 0 0 60px #9b59b6, 0 0 100px #7b1fa2;
+    pointer-events: none; z-index: 999999;
+    letter-spacing: 14px;
+    will-change: transform, opacity;
+    animation: tp-kanji-anim 3.2s ease-out forwards;
+}
+@keyframes tp-kanji-anim {
+    0%   { opacity: 0; transform: translate(-50%, -50%) scale(0.7); }
+    10%  { opacity: 1; transform: translate(-50%, -50%) scale(1.06); }
+    50%  { opacity: 1; transform: translate(-50%, -50%) scale(1.0); }
+    100% { opacity: 0; transform: translate(-50%, -50%) scale(1.12); }
 }
 
 /* ── Crash screen (1:43) ─────────────────────────────────────────────────────── */
@@ -1156,14 +1489,16 @@ const CSS_TEXT = `
 #tp-stagelight::before {
     content: "";
     position: absolute;
-    top: 0; left: 50%; transform: translateX(-50%);
-    width: 4px; height: 0;
+    top: 0; left: 50%; width: 4px; height: 100vh;
+    transform: translateX(-50%) scaleY(0);
+    transform-origin: top center;
     background: linear-gradient(180deg, rgba(255,230,140,0.7), rgba(255,200,60,0.15), transparent);
+    will-change: transform, opacity;
     animation: tp-stagelight-beam 2s ease-out 0.5s forwards;
 }
 @keyframes tp-stagelight-beam {
-    0%   { height: 0; opacity: 0; }
-    100% { height: 100vh; opacity: 1; }
+    0%   { transform: translateX(-50%) scaleY(0); opacity: 0; }
+    100% { transform: translateX(-50%) scaleY(1); opacity: 1; }
 }
 
 #tp-particles {
