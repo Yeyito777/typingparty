@@ -41,6 +41,26 @@ const settings = definePluginSettings({
         default: 3,
         stickToMarkers: true,
     },
+    enableSessionSummary: {
+        type: OptionType.BOOLEAN,
+        description: "Show a session summary when typing stops",
+        default: true,
+    },
+    enableMultiplier: {
+        type: OptionType.BOOLEAN,
+        description: "Enable the style multiplier system (tricks, combos, flow state)",
+        default: true,
+    },
+    enableHonoredOne: {
+        type: OptionType.BOOLEAN,
+        description: "Enable the Honored One secret at 300 WPM",
+        default: true,
+    },
+    enableChallenges: {
+        type: OptionType.BOOLEAN,
+        description: "Enable random typing challenge quick-time events",
+        default: true,
+    },
     honoredOneAudioUrl: {
         type: OptionType.STRING,
         description: "Audio track for a certain secret — SoundCloud/YouTube URL or direct .mp3/.ogg/.wav link.",
@@ -124,15 +144,33 @@ let hudMultiSep: HTMLElement | null = null;
 // Cached Discord elements (lazily resolved, stable across channel switches)
 let cachedBarEl:  HTMLElement | null = null;
 let cachedChatEl: HTMLElement | null = null;
+// After the first expensive substring querySelector, remember the exact class for fast re-queries
+let barClassName:  string | null = null;
+let chatClassName: string | null = null;
+
+function resolveElement(substringKey: string, cachedClass: string | null): [HTMLElement | null, string | null] {
+    // Fast path: exact class (4× faster than [class*=])
+    if (cachedClass) {
+        const el = document.querySelector("." + cachedClass) as HTMLElement | null;
+        if (el) return [el, cachedClass];
+    }
+    // Slow fallback: substring match (only on first call or after Discord re-render changes class names)
+    const el = document.querySelector(`[class*='${substringKey}']`) as HTMLElement | null;
+    if (el) {
+        const cls = Array.prototype.find.call(el.classList, (c: string) => c.includes(substringKey)) as string | undefined;
+        return [el, cls ?? null];
+    }
+    return [null, null];
+}
 
 function getBarEl(): HTMLElement | null {
     if (!cachedBarEl || !document.contains(cachedBarEl))
-        cachedBarEl = document.querySelector("[class*='channelTextArea']");
+        [cachedBarEl, barClassName] = resolveElement("channelTextArea", barClassName);
     return cachedBarEl;
 }
 function getChatEl(): HTMLElement | null {
     if (!cachedChatEl || !document.contains(cachedChatEl))
-        cachedChatEl = document.querySelector("[class*='chatContent']");
+        [cachedChatEl, chatClassName] = resolveElement("chatContent", chatClassName);
     return cachedChatEl;
 }
 
@@ -262,10 +300,10 @@ function startDrainLoop() {
         if (honoredOneActive && wpm < 200) deactivateHonoredOne();
 
         // Multiplier decays toward 1.0
-        if (multiplier > 1.0) multiplier = Math.max(1.0, multiplier - 0.015);
+        if (settings.store.enableMultiplier && multiplier > 1.0) multiplier = Math.max(1.0, multiplier - 0.015);
 
         // Typing challenge — random chance when at B rank or above, ~once per 50s
-        if (!challengeActive && !honoredOneActive && Math.random() < 0.002 && getRankIndex(styleScore) >= 2)
+        if (settings.store.enableChallenges && !challengeActive && !honoredOneActive && Math.random() < 0.002 && getRankIndex(styleScore) >= 2)
             triggerChallenge();
 
         if (styleScore > 0) {
@@ -274,14 +312,18 @@ function startDrainLoop() {
             styleScore = Math.max(0, styleScore - (idle ? IDLE_DRAIN[ri] : ACTIVE_DRAIN[ri]));
             rankSamples.push(ri);
             if (rankSamples.length > 600) rankSamples.shift();
-        } else if (!summaryTriggered && !summaryTimeout && (peakRankIdx > 1 || highCombo > 5)) {
+        } else if (settings.store.enableSessionSummary && !summaryTriggered && !summaryTimeout && (peakRankIdx > 1 || highCombo > 5)) {
             summaryTimeout = setTimeout(() => { summaryTimeout = null; showSummary(); }, 3000);
         }
 
-        // Reposition HUD every 500ms (not 100ms) — getBoundingClientRect forces layout
-        if (++drainTick % 5 === 0) positionHud();
-        // Single source of truth for HUD updates — 10Hz is smooth enough
-        updateHud();
+        // DOM updates every 2nd tick (200ms) to reduce layout contention with Discord.
+        // Game logic above still runs at 100ms for correct drain/timing behavior.
+        // CSS transitions on the HUD fill the visual gap.
+        if (++drainTick % 2 === 0) {
+            updateHud();
+            // Reposition HUD every ~1s — getBoundingClientRect forces layout
+            if (drainTick % 10 === 0) positionHud();
+        }
     }, 100);
 }
 
@@ -306,6 +348,7 @@ function showPopup(text: string, color: string) {
 // ── Multiplier ────────────────────────────────────────────────────────────────
 
 function boostMultiplier(amount: number, label: string) {
+    if (!settings.store.enableMultiplier) return;
     multiplier = Math.min(5.0, multiplier + amount);
     showPopup(`${label} ${multiplier.toFixed(1)}×`, "#ffd93d");
 }
@@ -580,24 +623,32 @@ function updateHud() {
 
     if (rankIdx !== prevRankIdx) {
         if (rankIdx > prevRankIdx && rankIdx >= 2) {
-            showPopup(RANKS[rankIdx].label, RANKS[rankIdx].color);
-            boostMultiplier(0.3, "rank up");
-            if (hudRankEl) {
-                hudRankEl.animate(
-                    [
-                        { transform: "scale(1)" },
-                        { transform: "scale(1.5)", textShadow: `0 0 20px ${RANKS[rankIdx].color}` },
-                        { transform: "scale(1)" },
-                    ],
-                    { duration: 400, easing: "cubic-bezier(0.34, 1.3, 0.64, 1)" }
-                );
-            }
+            // Apply multiplier boost synchronously (game logic)
+            if (settings.store.enableMultiplier) multiplier = Math.min(5.0, multiplier + 0.3);
+            // Defer all visual effects to rAF — showPopup calls getBoundingClientRect
+            // which forces sync layout and causes lag spikes on rank transitions
+            const _ri = rankIdx;
+            const _hre = hudRankEl;
+            requestAnimationFrame(() => {
+                showPopup(RANKS[_ri].label, RANKS[_ri].color);
+                if (settings.store.enableMultiplier) showPopup(`rank up ${multiplier.toFixed(1)}×`, "#ffd93d");
+                if (_hre) {
+                    _hre.animate(
+                        [
+                            { transform: "scale(1)" },
+                            { transform: "scale(1.5)", textShadow: `0 0 20px ${RANKS[_ri].color}` },
+                            { transform: "scale(1)" },
+                        ],
+                        { duration: 400, easing: "cubic-bezier(0.34, 1.3, 0.64, 1)" }
+                    );
+                }
+            });
         }
         prevRankIdx = rankIdx;
     }
     updateBarGlow(rankIdx);
 
-    if (wpm >= 300 && !honoredOneActive) activateHonoredOne();
+    if (settings.store.enableHonoredOne && wpm >= 300 && !honoredOneActive) activateHonoredOne();
     else if (honoredOneActive && wpm < 200) deactivateHonoredOne();
 
     // --- Dirty-checked DOM writes (skip if unchanged) ---
@@ -656,7 +707,7 @@ function updateHud() {
     }
 
     if (hudMultiEl && hudMultiSep) {
-        const show = multiplier > 1.05;
+        const show = settings.store.enableMultiplier && multiplier > 1.05;
         const mt = show ? `${multiplier.toFixed(1)}×` : "";
         if (mt !== hc_multi) { hudMultiEl.textContent = mt; hc_multi = mt; }
         if (show !== hc_multiShow) { hudMultiEl.style.display = hudMultiSep.style.display = show ? "" : "none"; hc_multiShow = show; }
@@ -987,6 +1038,8 @@ function deactivateHonoredOne() {
 
 // ── Screen shake ──────────────────────────────────────────────────────────────
 
+let activeShakeAnim: Animation | null = null;
+
 function triggerShake() {
     if (!settings.store.enableScreenShake) return;
     if (honoredOneActive || wpm > 400) return; // suppress at high WPM to prevent FPS death
@@ -1000,12 +1053,15 @@ function triggerShake() {
     const chat = getChatEl();
     if (!chat) return;
 
+    // Cancel previous shake so animations don't pile up
+    if (activeShakeAnim && activeShakeAnim.playState === "running") activeShakeAnim.cancel();
+
     // Level 0=B, 1=A, 2=S, 3=DEVIL (extra intensity for DEVIL)
     const level = Math.min(rankIdx - 2, 3);
     const px    = (level + 1) * 3 * (settings.store.shakeIntensity / 4);
     const dur   = 120 + level * 28;
 
-    chat.animate(
+    activeShakeAnim = chat.animate(
         [
             { transform: "translate(0,0)" },
             { transform: `translate(${-px}px,${px * 0.6}px)` },
@@ -1087,23 +1143,28 @@ function onKeyDown(e: KeyboardEvent) {
     incrementCombo();
     gainStyle();
     detectTricks();
-    // Confetti at caret; collapsed-range rects can be all-zero in some Discord builds
-    const sel = window.getSelection();
-    let cx: number, cy: number;
-    if (sel && sel.rangeCount > 0) {
-        const cr = sel.getRangeAt(0).getBoundingClientRect();
-        if (cr.left !== 0 || cr.top !== 0) {
-            cx = cr.right; cy = cr.top + cr.height * 0.5;
+
+    // Defer layout-forcing reads (getSelection, getBCR) to rAF so they don't
+    // collide with Discord's React render cycle — avoids 50ms+ sync layout stalls.
+    const _target = target;
+    requestAnimationFrame(() => {
+        const sel = window.getSelection();
+        let cx: number, cy: number;
+        if (sel && sel.rangeCount > 0) {
+            const cr = sel.getRangeAt(0).getBoundingClientRect();
+            if (cr.left !== 0 || cr.top !== 0) {
+                cx = cr.right; cy = cr.top + cr.height * 0.5;
+            } else {
+                const fb = _target.getBoundingClientRect();
+                cx = fb.left + fb.width * (0.3 + Math.random() * 0.4); cy = fb.top;
+            }
         } else {
-            const fb = target.getBoundingClientRect();
+            const fb = _target.getBoundingClientRect();
             cx = fb.left + fb.width * (0.3 + Math.random() * 0.4); cy = fb.top;
         }
-    } else {
-        const fb = target.getBoundingClientRect();
-        cx = fb.left + fb.width * (0.3 + Math.random() * 0.4); cy = fb.top;
-    }
-    spawnConfetti(cx, cy);
-    triggerShake();
+        spawnConfetti(cx, cy);
+        triggerShake();
+    });
 }
 
 function onKeyDownCapture(e: KeyboardEvent) {
@@ -1153,6 +1214,7 @@ export default definePlugin({
         deactivateHonoredOne();
         honoredOneActive = false; honoredOneAudioTimer = null; honoredOnePurpleTimer = null; honoredOneCrashTimer = null; honoredOneStagelightTimer = null; honoredOneRedBlueTimer = null; honoredOneAudio = null; honoredOneIframe = null;
 
+        if (activeShakeAnim) { activeShakeAnim.cancel(); activeShakeAnim = null; }
         const chat = getChatEl();
         if (chat) { chat.getAnimations().forEach(a => a.cancel()); chat.style.transform = ""; }
         const bar = getBarEl();
@@ -1174,7 +1236,7 @@ export default definePlugin({
         challengeCooldown = 0;
         prevRankIdx = 0; hudShown = false;
         resetSessionStats();
-        cachedBarEl = null; cachedChatEl = null;
+        cachedBarEl = null; cachedChatEl = null; barClassName = null; chatClassName = null;
     },
 });
 
