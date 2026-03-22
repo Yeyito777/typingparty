@@ -60,8 +60,9 @@ const RANKS = [
 ] as const;
 
 // Lower ranks drain gently so casual typists can still rank up
-const ACTIVE_DRAIN = [0.5, 0.6, 1.2, 2.2, 4.5, 12.0] as const;
-const IDLE_DRAIN   = [3.0, 3.5, 4.5, 6.0, 9.0, 20.0] as const;
+// (Rates are per 200ms tick — drain loop runs at 5Hz to reduce main-thread contention)
+const ACTIVE_DRAIN = [1.0, 1.2, 2.4, 4.4, 9.0, 24.0] as const;
+const IDLE_DRAIN   = [6.0, 7.0, 9.0, 12.0, 18.0, 40.0] as const;
 
 // More frequent milestones — dopamine hits like landing tricks
 const COMBO_MILESTONES: [number, number][] = [[5, 4], [10, 7], [20, 12], [35, 16], [50, 20], [75, 25], [100, 30]];
@@ -124,15 +125,36 @@ let hudMultiSep: HTMLElement | null = null;
 // Cached Discord elements (lazily resolved, stable across channel switches)
 let cachedBarEl:  HTMLElement | null = null;
 let cachedChatEl: HTMLElement | null = null;
+// After the first expensive substring querySelector, remember the exact class for fast re-queries
+let barClassName:  string | null = null;
+let chatClassName: string | null = null;
+
+function resolveElement(substringKey: string, cachedClass: string | null): [HTMLElement | null, string | null] {
+    // Fast path: exact class (4× faster than [class*=])
+    if (cachedClass) {
+        const el = document.querySelector("." + cachedClass) as HTMLElement | null;
+        if (el) return [el, cachedClass];
+    }
+    // Slow fallback: substring match (only on first call or after Discord re-render changes class names)
+    const el = document.querySelector(`[class*='${substringKey}']`) as HTMLElement | null;
+    if (el) {
+        // Extract the first matching class token so future lookups are fast
+        const cls = Array.prototype.find.call(el.classList, (c: string) => c.includes(substringKey)) as string | undefined;
+        return [el, cls ?? null];
+    }
+    return [null, null];
+}
 
 function getBarEl(): HTMLElement | null {
-    if (!cachedBarEl || !document.contains(cachedBarEl))
-        cachedBarEl = document.querySelector("[class*='channelTextArea']");
+    if (!cachedBarEl || !document.contains(cachedBarEl)) {
+        [cachedBarEl, barClassName] = resolveElement("channelTextArea", barClassName);
+    }
     return cachedBarEl;
 }
 function getChatEl(): HTMLElement | null {
-    if (!cachedChatEl || !document.contains(cachedChatEl))
-        cachedChatEl = document.querySelector("[class*='chatContent']");
+    if (!cachedChatEl || !document.contains(cachedChatEl)) {
+        [cachedChatEl, chatClassName] = resolveElement("chatContent", chatClassName);
+    }
     return cachedChatEl;
 }
 
@@ -191,23 +213,32 @@ let honoredOneAudio:  HTMLAudioElement  | null = null;
 // ── Rolling WPM ───────────────────────────────────────────────────────────────
 
 // 4-second rolling window — smoother, more accurate WPM than 2s
-function recordKeystrokeForWpm() {
-    const now = Date.now();
-    wpmTimestamps.push(now);
-    wpmTimestamps = wpmTimestamps.filter(t => t >= now - 4000);
+// Timestamps are always sorted ascending, so we prune from the left (no allocation).
+function pruneWpmTimestamps(now: number) {
+    const cutoff = now - 4000;
+    let i = 0;
+    while (i < wpmTimestamps.length && wpmTimestamps[i] < cutoff) i++;
+    if (i > 0) wpmTimestamps.splice(0, i);
+}
+
+function calcWpmFromTimestamps(now: number) {
     const n = wpmTimestamps.length;
     if (n < 2) { wpm = 0; return; }
     const elapsed = (now - wpmTimestamps[0]) / 60000;
     wpm = elapsed < 0.005 ? 0 : Math.round((n / 5) / elapsed);
 }
 
+function recordKeystrokeForWpm() {
+    const now = Date.now();
+    wpmTimestamps.push(now);
+    pruneWpmTimestamps(now);
+    calcWpmFromTimestamps(now);
+}
+
 function recalcWpm() {
     const now = Date.now();
-    wpmTimestamps = wpmTimestamps.filter(t => t >= now - 4000);
-    const n = wpmTimestamps.length;
-    if (n < 2) { wpm = 0; return; }
-    const elapsed = (now - wpmTimestamps[0]) / 60000;
-    wpm = elapsed < 0.005 ? 0 : Math.round((n / 5) / elapsed);
+    pruneWpmTimestamps(now);
+    calcWpmFromTimestamps(now);
 }
 
 // ── Rhythm ────────────────────────────────────────────────────────────────────
@@ -256,16 +287,19 @@ function hurtStyle(amount: number) {
 let drainTick = 0;
 function startDrainLoop() {
     if (drainInterval) return;
+    // 200ms (5Hz) — halved from 100ms to reduce main-thread contention with Discord.
+    // Drain rates are doubled to compensate. CSS transitions keep the HUD smooth between ticks.
     drainInterval = setInterval(() => {
         // Recalculate WPM so it decays naturally when typing stops
         recalcWpm();
         if (honoredOneActive && wpm < 200) deactivateHonoredOne();
 
-        // Multiplier decays toward 1.0
-        if (multiplier > 1.0) multiplier = Math.max(1.0, multiplier - 0.015);
+        // Multiplier decays toward 1.0 (doubled rate for 200ms tick)
+        if (multiplier > 1.0) multiplier = Math.max(1.0, multiplier - 0.03);
 
         // Typing challenge — random chance when at B rank or above, ~once per 50s
-        if (!challengeActive && !honoredOneActive && Math.random() < 0.002 && getRankIndex(styleScore) >= 2)
+        // (doubled probability to compensate for halved tick rate)
+        if (!challengeActive && !honoredOneActive && Math.random() < 0.004 && getRankIndex(styleScore) >= 2)
             triggerChallenge();
 
         if (styleScore > 0) {
@@ -278,11 +312,11 @@ function startDrainLoop() {
             summaryTimeout = setTimeout(() => { summaryTimeout = null; showSummary(); }, 3000);
         }
 
-        // Reposition HUD every 500ms (not 100ms) — getBoundingClientRect forces layout
+        // Reposition HUD every ~1s — getBoundingClientRect forces layout
         if (++drainTick % 5 === 0) positionHud();
-        // Single source of truth for HUD updates — 10Hz is smooth enough
+        // Single source of truth for HUD updates — 5Hz is smooth enough (CSS transitions fill gaps)
         updateHud();
-    }, 100);
+    }, 200);
 }
 
 // ── Popup ─────────────────────────────────────────────────────────────────────
@@ -552,6 +586,8 @@ function createHud() {
     document.body.appendChild(particleContainer);
 }
 
+let resizeObserver: ResizeObserver | null = null;
+
 function positionHud() {
     if (!hud) return;
     const bar = getBarEl();
@@ -559,6 +595,13 @@ function positionHud() {
     const rect = bar.getBoundingClientRect();
     hud.style.bottom = `${window.innerHeight - rect.top + 8}px`;
     hud.style.right  = `${window.innerWidth - rect.right + 8}px`;
+}
+
+function startResizeObserver() {
+    if (resizeObserver) return;
+    resizeObserver = new ResizeObserver(() => positionHud());
+    // Observe body for layout shifts (channel switches, sidebar toggles, etc.)
+    resizeObserver.observe(document.body);
 }
 
 // HUD write cache — only touch DOM when values actually change
@@ -987,6 +1030,8 @@ function deactivateHonoredOne() {
 
 // ── Screen shake ──────────────────────────────────────────────────────────────
 
+let activeShakeAnim: Animation | null = null;
+
 function triggerShake() {
     if (!settings.store.enableScreenShake) return;
     if (honoredOneActive || wpm > 400) return; // suppress at high WPM to prevent FPS death
@@ -1000,12 +1045,15 @@ function triggerShake() {
     const chat = getChatEl();
     if (!chat) return;
 
+    // Cancel previous shake so animations don't pile up
+    if (activeShakeAnim && activeShakeAnim.playState === "running") activeShakeAnim.cancel();
+
     // Level 0=B, 1=A, 2=S, 3=DEVIL (extra intensity for DEVIL)
     const level = Math.min(rankIdx - 2, 3);
     const px    = (level + 1) * 3 * (settings.store.shakeIntensity / 4);
     const dur   = 120 + level * 28;
 
-    chat.animate(
+    activeShakeAnim = chat.animate(
         [
             { transform: "translate(0,0)" },
             { transform: `translate(${-px}px,${px * 0.6}px)` },
@@ -1133,6 +1181,7 @@ export default definePlugin({
 
         createHud();
         positionHud();
+        startResizeObserver();
         startDrainLoop();
         document.addEventListener("keydown", onKeyDown, true);
         document.addEventListener("keydown", onKeyDownCapture, false);
@@ -1146,6 +1195,7 @@ export default definePlugin({
 
         if (comboTimer)     clearTimeout(comboTimer);
         if (drainInterval)  { clearInterval(drainInterval); drainInterval = null; }
+        if (resizeObserver) { resizeObserver.disconnect(); resizeObserver = null; }
         if (summaryTimeout) { clearTimeout(summaryTimeout); summaryTimeout = null; }
         if (particleRaf)    { cancelAnimationFrame(particleRaf); particleRaf = null; }
         particles.length = 0;
@@ -1153,6 +1203,7 @@ export default definePlugin({
         deactivateHonoredOne();
         honoredOneActive = false; honoredOneAudioTimer = null; honoredOnePurpleTimer = null; honoredOneCrashTimer = null; honoredOneStagelightTimer = null; honoredOneRedBlueTimer = null; honoredOneAudio = null; honoredOneIframe = null;
 
+        if (activeShakeAnim) { activeShakeAnim.cancel(); activeShakeAnim = null; }
         const chat = getChatEl();
         if (chat) { chat.getAnimations().forEach(a => a.cancel()); chat.style.transform = ""; }
         const bar = getBarEl();
@@ -1174,7 +1225,7 @@ export default definePlugin({
         challengeCooldown = 0;
         prevRankIdx = 0; hudShown = false;
         resetSessionStats();
-        cachedBarEl = null; cachedChatEl = null;
+        cachedBarEl = null; cachedChatEl = null; barClassName = null; chatClassName = null;
     },
 });
 
