@@ -630,7 +630,6 @@ function updateHud() {
             const _ri = rankIdx;
             const _hre = hudRankEl;
             requestAnimationFrame(() => {
-                showPopup(RANKS[_ri].label, RANKS[_ri].color);
                 if (settings.store.enableMultiplier) showPopup(`rank up ${multiplier.toFixed(1)}×`, "#ffd93d");
                 if (_hre) {
                     _hre.animate(
